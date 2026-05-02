@@ -1,0 +1,19 @@
+version: "3.9"
+services:
+  hardhat:
+    build: ..
+    ports:
+      - "8545:8545"
+      - "8080:8080"
+    volumes:
+      - ../results:/app/results
+      - ../data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: >
+      bash -c "npx hardhat node &
+               sleep 3 &&
+               npx hardhat run scripts/deploy.js --network localhost &&
+               npx hardhat run scripts/fund_accounts.js --network localhost &&
+               echo 'Blockchain ready' &&
+               tail -f /dev/null"

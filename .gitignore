@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+cache/
+artifacts/
+.env
+data/
+results/logs/*.csv
+results/plots/*.png
+fl/contract_addresses.json
+*.log
