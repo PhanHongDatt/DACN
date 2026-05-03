@@ -1,16 +1,8 @@
 #!/bin/bash
-# run_all.sh — Chạy toàn bộ thực nghiệm FL-Blockchain
-#
-# Sử dụng:
-#   bash experiments/run_all.sh           # chạy thật
-#   bash experiments/run_all.sh --dry-run # in lệnh, không thực thi
-#   bash experiments/run_all.sh --resume  # bỏ qua run đã có log
-#
-# Khuyến nghị: chạy trong tmux để tránh mất session khi SSH disconnect
-#   tmux new -s exp
-#   bash experiments/run_all.sh 2>&1 | tee results/run_all.log
+# run_all.sh — Chạy thực nghiệm FL-Blockchain theo trình tự logic so sánh
+# Trình tự: Baseline (Cơ sở) -> Vulnerability (Tấn công) -> Solution (Cải tiến)
 
-set -uo pipefail   # -e bỏ vì muốn tiếp tục khi 1 run fail
+set -uo pipefail
 
 DRY="${1:-}"
 LOG_DIR="./results/logs"
@@ -28,7 +20,6 @@ run() {
   echo "━━━ $desc ━━━"
   echo "CMD: python experiments/run_experiment.py $*"
 
-  # Resume: bỏ qua nếu đã có log cho run này
   if [ "${DRY}" = "--resume" ]; then
     local ds sc cfg alpha
     for arg in "$@"; do
@@ -64,65 +55,60 @@ summary() {
   local elapsed=$(( $(date +%s) - START_TIME ))
   echo ""
   echo "════════════════════════════════════════"
-  echo "  Kết quả: PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
+  echo "  KẾT QUẢ THỰC NGHIỆM TỔNG THỂ"
+  echo "  Trình tự: Baseline -> Vulnerability -> Solution"
+  echo "  PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
   printf "  Thời gian: %dh %dm %ds\n" $((elapsed/3600)) $((elapsed%3600/60)) $((elapsed%60))
-  echo "  Log: $LOG_DIR"
   echo "════════════════════════════════════════"
 }
 trap summary EXIT
 
-
 echo "════════════════════════════════════════"
-echo "  FL-Blockchain Experiment Suite"
-echo "  Log dir: $LOG_DIR"
-echo "  Mode: ${DRY:-run}"
+echo "  KHỞI CHẠY HỆ THỐNG THỰC NGHIỆM"
 echo "════════════════════════════════════════"
 
-# ══ BLOCK 1: Baseline A — không blockchain ══════════════════
+# ──────── PHASE 1: BASELINE REFERENCE (Tiền đề so sánh) ────────
+# Mục tiêu: Xác định hiệu năng tối ưu của hệ thống khi không có tấn công.
+echo ">>> PHASE 1: Establishing Baselines (Config A & B)"
 for ds in mnist fashion_mnist; do
-  for sc in K1 K2 K3; do
-    run "$ds/$sc/A" --dataset $ds --scenario $sc --config A \
-      --alpha 0.5 --no-blockchain --n-rounds $ROUNDS --log-dir $LOG_DIR
+  for sc in K1 K3; do
+    # Config A: FL truyền thống (không Blockchain)
+    run "$ds/$sc/A-Baseline" --dataset $ds --scenario $sc --config A --no-blockchain --n-rounds $ROUNDS
+    # Config B: Blockchain cơ bản (Baseline reward)
+    run "$ds/$sc/B-Baseline" --dataset $ds --scenario $sc --config B --alpha 1.0 --n-rounds $ROUNDS
   done
 done
 
-# ══ BLOCK 2: Config B — Yang & Li gốc (alpha=1.0) ═══════════
+# ──────── PHASE 2: SYSTEM VULNERABILITY (Kịch bản tấn công) ────────
+# Mục tiêu: Chứng minh Config B (Baseline) bị ảnh hưởng bởi Free-riders.
+echo ">>> PHASE 2: Simulating Attacks on Baseline (Config B + Attacks)"
 for ds in mnist fashion_mnist; do
-  for sc in K1 K2 K3; do
-    run "$ds/$sc/B" --dataset $ds --scenario $sc --config B \
-      --alpha 1.0 --n-rounds $ROUNDS --log-dir $LOG_DIR
+  for sc in K1 K3; do
+    run "$ds/$sc/B-Attack" --dataset $ds --scenario $sc --config B --alpha 1.0 --with-freeriders --n-rounds $ROUNDS
   done
 done
 
-# ══ BLOCK 3: Config C — Sensitivity Analysis alpha ══════════
+# ──────── PHASE 3: PROPOSED IMPROVEMENT (Giải pháp cải tiến) ────────
+# Mục tiêu: Chứng minh Config C vượt trội về tính công bằng và khả năng chống chịu.
+echo ">>> PHASE 3: Evaluating Proposed Solution (Config C)"
 for ds in mnist fashion_mnist; do
-  for sc in K1 K2 K3; do
-    for alpha in 0.0 0.3 0.5 0.7 1.0; do
-      run "$ds/$sc/C/a$alpha" --dataset $ds --scenario $sc --config C \
-        --alpha $alpha --n-rounds $ROUNDS --log-dir $LOG_DIR
-    done
+  for sc in K1 K3; do
+    # 3.1: Chạy với Alpha tối ưu (0.5) trong điều kiện bình thường
+    run "$ds/$sc/C-Normal" --dataset $ds --scenario $sc --config C --alpha 0.5 --n-rounds $ROUNDS
+    
+    # 3.2: Chạy trong điều kiện có Tấn công (Chứng minh khả năng loại bỏ kẻ xấu)
+    run "$ds/$sc/C-Defense" --dataset $ds --scenario $sc --config C --alpha 0.5 --with-freeriders --n-rounds $ROUNDS
+    
+    # 3.3: Phân tích độ nhạy Alpha (Sensitivity Analysis) - chỉ chạy trên K3 để tiết kiệm thời gian
+    if [ "$sc" = "K3" ]; then
+      for a in 0.0 0.3 0.7; do
+        run "$ds/K3/C-Alpha-$a" --dataset $ds --scenario K3 --config C --alpha $a --n-rounds $ROUNDS
+      done
+    fi
   done
 done
 
-# ══ BLOCK 4: Nhóm 3 — Free-rider simulation ═════════════════
-for ds in mnist fashion_mnist; do
-  for sc in K1 K2 K3; do
-    run "$ds/$sc/B+FR" --dataset $ds --scenario $sc --config B \
-      --alpha 1.0 --with-freeriders --n-rounds $ROUNDS --log-dir $LOG_DIR
-    run "$ds/$sc/C+FR" --dataset $ds --scenario $sc --config C \
-      --alpha 0.5 --with-freeriders --n-rounds $ROUNDS --log-dir $LOG_DIR
-  done
-done
-
-# ══ BLOCK 5: CIFAR-10 stress test (100 rounds CNN) ══════════
-for alpha in 0.0 0.3 0.5 0.7 1.0; do
-  run "cifar10/K3/C/a$alpha" --dataset cifar10 --scenario K3 --config C \
-    --alpha $alpha --n-rounds 100 --log-dir $LOG_DIR
-done
-run "cifar10/K3/B" --dataset cifar10 --scenario K3 --config B \
-  --alpha 1.0 --n-rounds 100 --log-dir $LOG_DIR
-run "cifar10/K3/C+FR" --dataset cifar10 --scenario K3 --config C \
-  --alpha 0.5 --with-freeriders --n-rounds 100 --log-dir $LOG_DIR
-run "cifar10/K3/B+FR" --dataset cifar10 --scenario K3 --config B \
-  --alpha 1.0 --with-freeriders --n-rounds 100 --log-dir $LOG_DIR
-
+# ──────── BONUS: CIFAR-10 STRESS TEST ────────
+echo ">>> BONUS: Stress Test with CIFAR-10 (Non-IID K3)"
+run "cifar10/K3/B-Attack" --dataset cifar10 --scenario K3 --config B --alpha 1.0 --with-freeriders --n-rounds 50
+run "cifar10/K3/C-Defense" --dataset cifar10 --scenario K3 --config C --alpha 0.5 --with-freeriders --n-rounds 50
