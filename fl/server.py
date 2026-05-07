@@ -6,7 +6,8 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from flwr.common import (
+import flwr as fl
+from fl.common import (
     FitRes,
     EvaluateRes,
     Parameters,
