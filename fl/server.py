@@ -6,11 +6,14 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import flwr as fl
 from flwr.common import (
-    FitRes, Parameters, Scalar,
-    ndarrays_to_parameters, parameters_to_ndarrays,
-    FitIns
+    FitRes,
+    EvaluateRes,
+    Parameters,
+    Scalar,
+    ndarrays_to_parameters,
+    parameters_to_ndarrays,
+    FitIns,
 )
 from flwr.server.client_proxy import ClientProxy
 
