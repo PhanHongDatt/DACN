@@ -1,12 +1,19 @@
 #!/bin/bash
-# run_all.sh — Chạy thực nghiệm FL-Blockchain theo trình tự logic so sánh
-# Trình tự: Baseline (Cơ sở) -> Vulnerability (Tấn công) -> Solution (Cải tiến)
+# run_all.sh — VM-friendly experiment matrix for FL/Blockchain/CSRA comparison.
+# Default scope: 70 runs at 50 rounds.
 
 set -uo pipefail
 
-DRY="${1:-}"
-LOG_DIR="./results/logs"
-ROUNDS=50
+MODE="${1:-}"
+LOG_DIR="${LOG_DIR:-./results/logs}"
+ROUNDS="${ROUNDS:-50}"
+SEED="${SEED:-42}"
+N_CLIENTS="${N_CLIENTS:-10}"
+TRIM_RATIO="${TRIM_RATIO:-0.1}"
+
+MAIN_DATASETS=("mnist" "fashion_mnist")
+DIRICHLET_ALPHAS=("0.5" "0.1")
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -14,25 +21,60 @@ START_TIME=$(date +%s)
 
 mkdir -p "$LOG_DIR"
 
+da_code() {
+  case "$1" in
+    1|1.0) echo "100" ;;
+    0.5|.5) echo "050" ;;
+    0.1|.1) echo "010" ;;
+    0.05|.05) echo "005" ;;
+    *) python -c "print(f'{int(round(float(\"$1\") * 100)):03d}')" ;;
+  esac
+}
+
+alpha_code() {
+  python -c "print(f'{int(round(float(\"$1\") * 10)):02d}')"
+}
+
 run() {
   local desc="$1"; shift
+  local runner="${RUNNER:-experiments/run_experiment.py}"
   echo ""
   echo "━━━ $desc ━━━"
-  echo "CMD: python experiments/run_experiment.py $*"
+  echo "CMD: python $runner $*"
 
-  if [ "${DRY}" = "--resume" ]; then
-    local ds sc cfg alpha
+  if [ "$MODE" = "--resume" ]; then
+    local ds="" sc="" cfg="" alpha="" dir_alpha="" prev=""
     for arg in "$@"; do
       case "$prev" in
-        --dataset)  ds="$arg" ;;
-        --scenario) sc="$arg" ;;
-        --config)   cfg="$arg" ;;
-        --alpha)    alpha="${arg//.}" ;;
+        --dataset)         ds="$arg" ;;
+        --scenario)        sc="$arg" ;;
+        --config)          cfg="$arg" ;;
+        --alpha)           alpha="$(alpha_code "$arg")" ;;
+        --dirichlet-alpha) dir_alpha="$arg" ;;
       esac
       prev="$arg"
     done
-    prev=""
-    local pattern="${LOG_DIR}/${ds:-}_${sc:-}_${cfg:-}_a${alpha:-}*.csv"
+
+    if [ -z "$alpha" ]; then
+      alpha="00"
+    fi
+
+    local log_cfg="$cfg"
+    if [[ "$runner" == *"run_experiment_csra.py" && "$cfg" == "C" ]]; then
+      log_cfg="C-CSRA"
+      alpha="05"
+    fi
+    if [[ "$runner" == *"run_experiment_trimmed.py" ]]; then
+      log_cfg="${cfg:-TrimmedMean}"
+      alpha="00"
+    fi
+
+    local dir_part=""
+    if [ -n "$dir_alpha" ]; then
+      dir_part="_da$(da_code "$dir_alpha")"
+    fi
+
+    local pattern="${LOG_DIR}/${ds}_${sc}_${log_cfg}_a${alpha}${dir_part}_*.csv"
     if ls $pattern 1>/dev/null 2>&1; then
       echo "SKIP (log đã tồn tại)"
       SKIP=$((SKIP+1))
@@ -40,9 +82,9 @@ run() {
     fi
   fi
 
-  [ "${DRY}" = "--dry-run" ] && return 0
+  [ "$MODE" = "--dry-run" ] && return 0
 
-  if python experiments/run_experiment.py "$@"; then
+  if python "$runner" "$@"; then
     PASS=$((PASS+1))
     echo "OK"
   else
@@ -55,60 +97,76 @@ summary() {
   local elapsed=$(( $(date +%s) - START_TIME ))
   echo ""
   echo "════════════════════════════════════════"
-  echo "  KẾT QUẢ THỰC NGHIỆM TỔNG THỂ"
-  echo "  Trình tự: Baseline -> Vulnerability -> Solution"
+  echo "  KẾT QUẢ THỰC NGHIỆM"
   echo "  PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
   printf "  Thời gian: %dh %dm %ds\n" $((elapsed/3600)) $((elapsed%3600/60)) $((elapsed%60))
   echo "════════════════════════════════════════"
 }
 trap summary EXIT
 
+common_args() {
+  echo --n-clients "$N_CLIENTS" --n-rounds "$ROUNDS" --seed "$SEED" --log-dir "$LOG_DIR"
+}
+
+run_method_pair() {
+  local ds="$1"; shift
+  local label="$1"; shift
+
+  run "$ds/$label/FedAvg-Clean" \
+    --dataset "$ds" "$@" --config A --no-blockchain $(common_args)
+  run "$ds/$label/BlockchainQuality-Clean" \
+    --dataset "$ds" "$@" --config B --alpha 1.0 $(common_args)
+  RUNNER="experiments/run_experiment_trimmed.py" run "$ds/$label/TrimmedMean-Clean" \
+    --dataset "$ds" "$@" --config TrimmedMean --trim-ratio "$TRIM_RATIO" --no-blockchain $(common_args)
+  RUNNER="experiments/run_experiment_csra.py" run "$ds/$label/CSRA-Clean" \
+    --dataset "$ds" "$@" --config C --alpha 0.5 $(common_args)
+
+  run "$ds/$label/FedAvg-Attack" \
+    --dataset "$ds" "$@" --config A --no-blockchain --with-freeriders $(common_args)
+  run "$ds/$label/BlockchainQuality-Attack" \
+    --dataset "$ds" "$@" --config B --alpha 1.0 --with-freeriders $(common_args)
+  RUNNER="experiments/run_experiment_trimmed.py" run "$ds/$label/TrimmedMean-Attack" \
+    --dataset "$ds" "$@" --config TrimmedMean --trim-ratio "$TRIM_RATIO" --with-freeriders --no-blockchain $(common_args)
+  RUNNER="experiments/run_experiment_csra.py" run "$ds/$label/CSRA-Defense" \
+    --dataset "$ds" "$@" --config C --alpha 0.5 --with-freeriders $(common_args)
+}
+
+run_cifar_stress() {
+  local ds="cifar10"
+  local label="K3-Dirichlet-a0.1-Stress"
+  local args=(--scenario K3 --dirichlet-alpha 0.1)
+
+  run "$ds/$label/FedAvg-Clean" \
+    --dataset "$ds" "${args[@]}" --config A --no-blockchain $(common_args)
+  run "$ds/$label/BlockchainQuality-Clean" \
+    --dataset "$ds" "${args[@]}" --config B --alpha 1.0 $(common_args)
+  RUNNER="experiments/run_experiment_csra.py" run "$ds/$label/CSRA-Clean" \
+    --dataset "$ds" "${args[@]}" --config C --alpha 0.5 $(common_args)
+
+  run "$ds/$label/FedAvg-Attack" \
+    --dataset "$ds" "${args[@]}" --config A --no-blockchain --with-freeriders $(common_args)
+  run "$ds/$label/BlockchainQuality-Attack" \
+    --dataset "$ds" "${args[@]}" --config B --alpha 1.0 --with-freeriders $(common_args)
+  RUNNER="experiments/run_experiment_csra.py" run "$ds/$label/CSRA-Defense" \
+    --dataset "$ds" "${args[@]}" --config C --alpha 0.5 --with-freeriders $(common_args)
+}
+
 echo "════════════════════════════════════════"
-echo "  KHỞI CHẠY HỆ THỐNG THỰC NGHIỆM"
+echo "  KHỞI CHẠY MA TRẬN THỰC NGHIỆM VM"
+echo "  Main datasets: ${MAIN_DATASETS[*]}"
+echo "  Main scenarios: K1, K2, K3(alpha=${DIRICHLET_ALPHAS[*]})"
+echo "  Stress dataset: cifar10/K3(alpha=0.1)"
+echo "  Methods: FedAvg, BlockchainQuality, TrimmedMean, CSRA"
+echo "  Rounds mỗi run: $ROUNDS"
+echo "  Seed: $SEED"
 echo "════════════════════════════════════════"
 
-# ──────── PHASE 1: BASELINE REFERENCE (Tiền đề so sánh) ────────
-# Mục tiêu: Xác định hiệu năng tối ưu của hệ thống khi không có tấn công.
-echo ">>> PHASE 1: Establishing Baselines (Config A & B)"
-for ds in mnist fashion_mnist; do
-  for sc in K1 K3; do
-    # Config A: FL truyền thống (không Blockchain)
-    run "$ds/$sc/A-Baseline" --dataset $ds --scenario $sc --config A --no-blockchain --n-rounds $ROUNDS
-    # Config B: Blockchain cơ bản (Baseline reward)
-    run "$ds/$sc/B-Baseline" --dataset $ds --scenario $sc --config B --alpha 1.0 --n-rounds $ROUNDS
+for ds in "${MAIN_DATASETS[@]}"; do
+  run_method_pair "$ds" "K1-IID" --scenario K1
+  run_method_pair "$ds" "K2-WeakNonIID" --scenario K2
+  for da in "${DIRICHLET_ALPHAS[@]}"; do
+    run_method_pair "$ds" "K3-Dirichlet-a$da" --scenario K3 --dirichlet-alpha "$da"
   done
 done
 
-# ──────── PHASE 2: SYSTEM VULNERABILITY (Kịch bản tấn công) ────────
-# Mục tiêu: Chứng minh Config B (Baseline) bị ảnh hưởng bởi Free-riders.
-echo ">>> PHASE 2: Simulating Attacks on Baseline (Config B + Attacks)"
-for ds in mnist fashion_mnist; do
-  for sc in K1 K3; do
-    run "$ds/$sc/B-Attack" --dataset $ds --scenario $sc --config B --alpha 1.0 --with-freeriders --n-rounds $ROUNDS
-  done
-done
-
-# ──────── PHASE 3: PROPOSED IMPROVEMENT (Giải pháp cải tiến) ────────
-# Mục tiêu: Chứng minh Config C vượt trội về tính công bằng và khả năng chống chịu.
-echo ">>> PHASE 3: Evaluating Proposed Solution (Config C)"
-for ds in mnist fashion_mnist; do
-  for sc in K1 K3; do
-    # 3.1: Chạy với Alpha tối ưu (0.5) trong điều kiện bình thường
-    run "$ds/$sc/C-Normal" --dataset $ds --scenario $sc --config C --alpha 0.5 --n-rounds $ROUNDS
-    
-    # 3.2: Chạy trong điều kiện có Tấn công (Chứng minh khả năng loại bỏ kẻ xấu)
-    run "$ds/$sc/C-Defense" --dataset $ds --scenario $sc --config C --alpha 0.5 --with-freeriders --n-rounds $ROUNDS
-    
-    # 3.3: Phân tích độ nhạy Alpha (Sensitivity Analysis) - chỉ chạy trên K3 để tiết kiệm thời gian
-    if [ "$sc" = "K3" ]; then
-      for a in 0.0 0.3 0.7; do
-        run "$ds/K3/C-Alpha-$a" --dataset $ds --scenario K3 --config C --alpha $a --n-rounds $ROUNDS
-      done
-    fi
-  done
-done
-
-# ──────── BONUS: CIFAR-10 STRESS TEST ────────
-echo ">>> BONUS: Stress Test with CIFAR-10 (Non-IID K3)"
-run "cifar10/K3/B-Attack" --dataset cifar10 --scenario K3 --config B --alpha 1.0 --with-freeriders --n-rounds 50
-run "cifar10/K3/C-Defense" --dataset cifar10 --scenario K3 --config C --alpha 0.5 --with-freeriders --n-rounds 50
+run_cifar_stress

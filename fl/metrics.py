@@ -6,7 +6,7 @@ Nhóm 2 (RQ2): Jain's Index, CRC, Gini, Fairness Gap (FG) *metric mới*
 Nhóm 3 (RQ3): FDR, RR, EII
 """
 import numpy as np
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional
 from scipy.stats import pearsonr
 
 
@@ -84,6 +84,63 @@ def free_rider_detection_rate(
     detected = set(detected_free_riders)
     actual   = set(actual_free_riders)
     return len(detected & actual) / len(actual)
+
+
+def false_positive_rate(
+    detected_clients: List[int],
+    malicious_clients: List[int],
+    all_clients: Optional[List[int]] = None,
+) -> float:
+    """FPR = honest clients incorrectly detected as anomalies / total honest clients."""
+    detected = set(detected_clients)
+    malicious = set(malicious_clients)
+    if all_clients is None:
+        all_clients = sorted(detected | malicious)
+    honest = set(all_clients) - malicious
+    if not honest:
+        return 0.0
+    return len(detected & honest) / len(honest)
+
+
+def reward_leakage(rewards: np.ndarray, malicious_mask: np.ndarray) -> float:
+    """Reward leakage = reward captured by malicious clients / total reward."""
+    r = np.asarray(rewards, dtype=float)
+    mask = np.asarray(malicious_mask, dtype=bool)
+    total = float(np.nansum(r))
+    if total <= 1e-12 or len(r) == 0:
+        return 0.0
+    return float(np.nansum(r[mask]) / total)
+
+
+def convergence_round(
+    accuracies: List[float],
+    rounds: Optional[List[int]] = None,
+    peak_ratio: float = 0.95,
+    patience: int = 5,
+) -> Optional[int]:
+    """
+    First round where accuracy reaches peak_ratio * peak_accuracy and remains
+    above that target for the next `patience` rounds.
+    """
+    values = np.asarray(accuracies, dtype=float)
+    valid = ~np.isnan(values)
+    values = values[valid]
+    if rounds is None:
+        round_values = np.arange(1, len(valid) + 1)[valid]
+    else:
+        round_values = np.asarray(rounds, dtype=int)[valid]
+    if len(values) == 0:
+        return None
+
+    target = float(np.max(values) * peak_ratio)
+    window = max(1, int(patience))
+    for idx in range(len(values)):
+        if values[idx] < target:
+            continue
+        end = min(idx + window, len(values))
+        if np.all(values[idx:end] >= target):
+            return int(round_values[idx])
+    return None
 
 
 def reward_ratio(
