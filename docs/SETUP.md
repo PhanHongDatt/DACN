@@ -66,16 +66,25 @@ python experiments/run_experiment.py \
 
 ## Bước 9 — Chạy toàn bộ thực nghiệm
 ```bash
+# Xem các chế độ chạy
+bash experiments/run_all.sh --help
+
+# Smoke test nhanh, không cần blockchain
+bash experiments/run_all.sh --smoke
+
 # Dry-run: in lệnh mà không thực thi
-bash experiments/run_all.sh --dry-run
+bash experiments/run_all.sh --full --dry-run
+
+# Chạy nhanh MNIST trước khi chạy full matrix
+bash experiments/run_all.sh --quick --resume
 
 # Chạy thật (ước tính 8-12 giờ tùy cấu hình máy)
-bash experiments/run_all.sh 2>&1 | tee results/run_all.log
+bash experiments/run_all.sh --full --resume 2>&1 | tee results/run_all.log
 ```
 
 ## Bước 10 — Phân tích kết quả
 ```bash
-python experiments/analyze_results.py
+python analyze_results.py --report
 # Xuất summary CSV và plots vào results/
 ```
 

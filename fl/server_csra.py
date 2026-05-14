@@ -21,7 +21,7 @@ class FLCSRAStrategy(fl.server.strategy.FedAvg):
     Advanced Federated Learning Strategy using CSRA principles.
     
     Features:
-        - Variance-based Anomaly Detection (DCD): Detects noise-based updates.
+        - Delta-norm anomaly detection (DCD): detects abnormal local updates.
         - Bid-aware Reward Distribution: Integrates economic incentives.
         - Reputation-gated Selection: Uses on-chain history for participation logic.
     """

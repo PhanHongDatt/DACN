@@ -118,10 +118,20 @@ python experiments/run_experiment.py --dataset mnist --scenario K3 --config C --
 python experiments/run_experiment_csra.py --dataset mnist --scenario K3 --config C --alpha 0.5 --with-freeriders
 ```
 
-### 4.2. Chạy toàn bộ kịch bản tự động
-Script `run_all.sh` được cấu hình theo trình tự logic nghiên cứu: **Baseline** (Cơ sở) -> **Vulnerability** (Lỗ hổng) -> **Solution** (Giải pháp).
+### 4.2. Chạy kịch bản tự động
+Script `run_all.sh` hỗ trợ nhiều chế độ chạy để kiểm tra nhanh hoặc chạy ma trận đầy đủ trên VM.
 ```bash
-bash experiments/run_all.sh
+# Xem lệnh, không chạy
+bash experiments/run_all.sh --full --dry-run
+
+# Smoke test nhanh, không cần blockchain
+bash experiments/run_all.sh --smoke
+
+# Chạy nhanh MNIST trước khi chạy full matrix
+bash experiments/run_all.sh --quick --resume
+
+# Chạy đầy đủ 70 runs, mặc định 50 rounds/run
+bash experiments/run_all.sh --full --resume
 ```
 
 ---
@@ -129,7 +139,7 @@ bash experiments/run_all.sh
 ## 5. Đặc điểm nổi bật của hệ thống CSRA (Cải tiến)
 
 Hệ thống cải tiến tích hợp các cơ chế nâng cao dựa trên khung CSRA để đối phó với các Client tấn công:
-*   **CSRA-DCD (Detection):** Thuật toán phát hiện bất thường dựa trên phương sai (Variance) của bản cập nhật trọng số. Các bản cập nhật có nhiễu (noise) sẽ bị loại bỏ khỏi quá trình tổng hợp toàn cục.
+*   **CSRA-DCD (Detection):** Thuật toán phát hiện bất thường dựa trên chuẩn L2 của update delta và MAD robust z-score. Các bản cập nhật bất thường sẽ bị loại khỏi aggregation và reward.
 *   **CSRA-QMS (Quality Management):** Điểm chất lượng được tính toán kết hợp với hồ sơ trung thực lịch sử $p(H)$, giúp hệ thống ghi nhận đóng góp công bằng hơn.
 *   **Bidding Mechanism:** Mỗi Client gửi kèm báo giá (Bid), cho phép máy chủ điều chỉnh chính sách phần thưởng theo chi phí thực tế.
 
@@ -138,7 +148,7 @@ Hệ thống cải tiến tích hợp các cơ chế nâng cao dựa trên khung
 ## 6. Phân tích kết quả
 Dữ liệu nhật ký được lưu trữ tại `results/logs/`. Bạn có thể trích xuất biểu đồ phân tích bằng lệnh:
 ```bash
-python experiments/analyze_results.py
+python analyze_results.py --report
 ```
 Kết quả biểu đồ sẽ hiển thị sự khác biệt về độ chính xác (Accuracy), tính công bằng (Fairness) và khả năng chống tấn công giữa các phiên bản.
 
