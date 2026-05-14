@@ -4,13 +4,20 @@ Chạy: python scripts/check_python.py
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 issues = []
 ok     = []
 
 # 1. Python version
-if sys.version_info < (3, 9):
-    issues.append(f"Python >= 3.9 required, got {sys.version}")
+if sys.version_info < (3, 9) or sys.version_info >= (3, 12):
+    issues.append(
+        f"Python 3.11 is required for this project runtime, got {sys.version_info.major}.{sys.version_info.minor}. "
+        "Use a Python 3.11 virtual environment so Flower/Ray simulation dependencies install correctly."
+    )
 else:
     ok.append(f"Python {sys.version_info.major}.{sys.version_info.minor}")
 
@@ -24,6 +31,7 @@ packages = {
     "pandas":      "pandas",
     "scipy":       "scipy",
     "matplotlib":  "matplotlib",
+    "ray":         "ray",
 }
 for name, pkg in packages.items():
     try:

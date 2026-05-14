@@ -42,14 +42,15 @@ class FLClient(fl.client.NumPyClient):
 
         if self.client_type == "free_rider":
             # Gửi update ngẫu nhiên, không train thực sự.
-            # BUG7 FIX: báo data_size=0 thay vì data_size thật.
+            # Vẫn khai báo num_examples thật để update độc hại tác động FedAvg,
+            # nhưng data commitment cho reward/reputation là 0.
             # Free-rider không cam kết dữ liệu → data commitment thấp
             # → reputation giảm dần → bị loại khỏi P_honest.
             noisy_params = [p + np.random.normal(0, 0.1, p.shape).astype(p.dtype)
                             for p in parameters]
             return (
                 noisy_params,
-                0,   # báo 0 mẫu — không cam kết dữ liệu
+                self.data_size,
                 {"quality_score": 0.0, "data_size": 0, "client_type": self.client_type}
             )
 
@@ -64,6 +65,8 @@ class FLClient(fl.client.NumPyClient):
 
         for _ in range(self.cfg.local_epochs):
             for X, y in self.train_loader:
+                if X.size(0) < 2:
+                    continue
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
                 loss = criterion(self.model(X), y)

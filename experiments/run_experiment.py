@@ -22,7 +22,7 @@ import numpy as np
 import torch
 
 from fl.config import ProjectConfig, FLConfig, ExperimentConfig
-from fl.data_utils import get_client_partitions, load_dataset, make_dataloader
+from fl.data_utils import apply_labels, get_client_partitions, load_dataset, make_dataloader
 from fl.models import get_model, get_parameters
 from fl.blockchain import BlockchainBridge
 from fl.server import FLBlockchainStrategy
@@ -52,11 +52,14 @@ def parse_args():
     p.add_argument("--n-clients",      default=10,   type=int)
     p.add_argument("--n-rounds",       default=50,   type=int)
     p.add_argument("--with-freeriders", action="store_true")
+    p.add_argument("--with-label-noise", action="store_true")
     p.add_argument("--no-blockchain",   action="store_true")
     p.add_argument("--seed",           default=42,   type=int)
     p.add_argument("--log-dir",        default="./results/logs")
     p.add_argument("--batch-size",     default=32,   type=int)
     p.add_argument("--local-epochs",   default=2,    type=int)
+    p.add_argument("--dirichlet-alpha", default=None, type=float,
+                   help="Dirichlet label-distribution alpha for K3 Non-IID")
     return p.parse_args()
 
 
@@ -89,6 +92,12 @@ def main():
         seed        = args.seed,
         log_dir     = args.log_dir,
     )
+    if not (args.with_freeriders or args.with_label_noise):
+        exp_cfg.noise_clients = []
+    if not args.with_freeriders:
+        exp_cfg.lazy_client_ids = []
+    if args.dirichlet_alpha is not None:
+        exp_cfg.dirichlet_beta = args.dirichlet_alpha
     fl_cfg = FLConfig(
         n_clients     = args.n_clients,
         n_rounds      = args.n_rounds,
@@ -102,8 +111,9 @@ def main():
 
     # ── Data ─────────────────────────────────────────────────
     logger.info(f"Loading {args.dataset}, scenario={args.scenario}")
-    splits, _, mean_ds = get_client_partitions(args.dataset, args.n_clients, exp_cfg)
+    splits, train_labels, mean_ds = get_client_partitions(args.dataset, args.n_clients, exp_cfg)
     train_dataset = load_dataset(args.dataset, train=True)
+    apply_labels(train_dataset, train_labels)
     test_dataset  = load_dataset(args.dataset, train=False)
 
     sizes = [len(s) for s in splits]
@@ -129,7 +139,13 @@ def main():
             bridge = None
 
     # ── Logger ───────────────────────────────────────────────
-    run_id     = make_run_id(args.dataset, args.scenario, args.config, alpha)
+    run_id     = make_run_id(
+        args.dataset,
+        args.scenario,
+        args.config,
+        alpha,
+        exp_cfg.dirichlet_beta if args.scenario == "K3" else None,
+    )
     exp_logger = ExperimentLogger(run_id, args.log_dir)
 
     # Thêm file handler để log ra file
@@ -205,6 +221,7 @@ def main():
         logger.error(traceback.format_exc())
         sys.exit(1)
     finally:
+        strategy.flush_pending_logs()
         # BUG6 FIX: LUÔN đóng logger dù có exception hay không
         exp_logger.close()
         logger.info("Logger closed cleanly")

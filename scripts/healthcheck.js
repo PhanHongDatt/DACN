@@ -39,11 +39,16 @@ async function main() {
     issues.push("fl/contract_addresses.json not found — run: npm run deploy");
   } else {
     const addrs = JSON.parse(fs.readFileSync(addrFile));
-    ok.push(`Contracts: ${Object.keys(addrs).filter(k => k !== "deployer" && k !== "network" && k !== "deployedAt").join(", ")}`);
+    const contractNames = ["ContributionStore", "RewardDistributor", "FLRegistry"];
+    ok.push(`Contracts: ${contractNames.join(", ")}`);
 
     // 5. Check contracts exist on chain
-    for (const [name, addr] of Object.entries(addrs)) {
-      if (!addr.startsWith("0x")) continue;
+    for (const name of contractNames) {
+      const addr = addrs[name];
+      if (!addr || !addr.startsWith("0x")) {
+        issues.push(`${name} address missing or invalid — run: npm run deploy`);
+        continue;
+      }
       const code = await ethers.provider.getCode(addr);
       if (code === "0x") {
         issues.push(`${name} has no code at ${addr} — redeploy needed`);

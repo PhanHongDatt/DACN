@@ -40,7 +40,10 @@ def load_dataset(name: str, train: bool = True):
 
 def add_label_noise(indices: np.ndarray, labels: np.ndarray,
                     noise_ratio: float, n_classes: int, seed: int = 42) -> np.ndarray:
-    """Flip label ngẫu nhiên cho một tỷ lệ mẫu trong tập indices."""
+    """Flip label ngẫu nhiên cho một tỷ lệ mẫu trong tập indices.
+
+    Lưu ý: hàm này sửa mảng labels tại chỗ để runner có thể áp lại vào dataset.
+    """
     rng = np.random.default_rng(seed)
     noisy = indices.copy()
     n_noisy = int(len(noisy) * noise_ratio)
@@ -75,41 +78,91 @@ def partition_weak_noniid(labels: np.ndarray, n_clients: int,
         idx = rng.permutation(np.where(labels == c)[0])
         class_shards[c] = np.array_split(idx, n_clients)
 
-    # Mỗi client nhận classes_per_client class ngẫu nhiên (không trùng hoàn toàn)
+    # Mỗi client nhận classes_per_client class hợp lệ (không trùng trong client)
     client_splits = []
+    target_classes = min(classes_per_client, n_classes)
     for i in range(n_clients):
         # Chọn class cho client này bằng cách xoay vòng để đảm bảo coverage
-        chosen = [(i * classes_per_client + j) % n_classes for j in range(classes_per_client)]
+        chosen = [(i * classes_per_client + j) % n_classes for j in range(target_classes)]
         # Shuffle nhẹ để tránh pattern quá đều
-        chosen = [c ^ (i % 3) % n_classes if rng.random() > 0.7 else c for c in chosen]
-        chosen = list(set(chosen))[:classes_per_client]
-        while len(chosen) < classes_per_client:
-            chosen.append(rng.integers(0, n_classes))
-        chosen = list(set(chosen))[:classes_per_client]
+        varied = []
+        for c in chosen:
+            if rng.random() > 0.7:
+                c = (c + (i % 3)) % n_classes
+            if c not in varied:
+                varied.append(int(c))
 
-        shards = [class_shards[c][i % len(class_shards[c])] for c in chosen]
+        while len(varied) < target_classes:
+            c = int(rng.integers(0, n_classes))
+            if c not in varied:
+                varied.append(c)
+
+        shards = [class_shards[c][i % len(class_shards[c])] for c in varied]
         client_splits.append(np.concatenate(shards))
 
     return client_splits
 
 
+def apply_labels(dataset, labels: np.ndarray) -> None:
+    """Áp labels đã xử lý/noise vào torchvision dataset trước khi tạo Subset."""
+    labels = np.asarray(labels, dtype=np.int64)
+    if hasattr(dataset, "targets"):
+        current = dataset.targets
+        if torch.is_tensor(current):
+            dataset.targets = torch.as_tensor(labels, dtype=current.dtype)
+        else:
+            dataset.targets = labels.tolist()
+    elif hasattr(dataset, "labels"):
+        current = dataset.labels
+        if torch.is_tensor(current):
+            dataset.labels = torch.as_tensor(labels, dtype=current.dtype)
+        else:
+            dataset.labels = labels.tolist()
+    else:
+        raise AttributeError("Dataset không có thuộc tính targets/labels để áp label noise")
+
+
 def partition_dirichlet(labels: np.ndarray, n_clients: int,
                         n_classes: int, beta: float = 0.1,
-                        seed: int = 42) -> List[np.ndarray]:
+                        seed: int = 42, min_size: int = 10,
+                        max_retries: int = 100) -> List[np.ndarray]:
     """K3: Strong Non-IID — phân phối Dirichlet."""
     rng = np.random.default_rng(seed)
     class_indices = [np.where(labels == c)[0] for c in range(n_classes)]
-    client_splits = [[] for _ in range(n_clients)]
 
-    for c in range(n_classes):
-        idx = rng.permutation(class_indices[c])
-        proportions = rng.dirichlet(np.repeat(beta, n_clients))
-        proportions = np.cumsum(proportions * len(idx)).astype(int)[:-1]
-        splits = np.split(idx, proportions)
-        for ci, s in enumerate(splits):
-            client_splits[ci].extend(s.tolist())
+    def sample_once() -> List[np.ndarray]:
+        client_splits = [[] for _ in range(n_clients)]
+        for c in range(n_classes):
+            idx = rng.permutation(class_indices[c])
+            proportions = rng.dirichlet(np.repeat(beta, n_clients))
+            proportions = np.cumsum(proportions * len(idx)).astype(int)[:-1]
+            splits = np.split(idx, proportions)
+            for ci, s in enumerate(splits):
+                client_splits[ci].extend(s.tolist())
+        return [np.array(s, dtype=int) for s in client_splits]
 
-    return [np.array(s) for s in client_splits]
+    for _ in range(max_retries):
+        splits = sample_once()
+        if min(len(s) for s in splits) >= min_size:
+            return splits
+
+    splits = sample_once()
+    if len(labels) < n_clients * min_size:
+        return splits
+
+    # Fallback deterministic balancing: only used for extreme Dirichlet draws.
+    while min(len(s) for s in splits) < min_size:
+        dst = int(np.argmin([len(s) for s in splits]))
+        src = int(np.argmax([len(s) for s in splits]))
+        movable = len(splits[src]) - min_size
+        if movable <= 0:
+            break
+        need = min_size - len(splits[dst])
+        take = min(need, movable)
+        moved = splits[src][-take:]
+        splits[src] = splits[src][:-take]
+        splits[dst] = np.concatenate([splits[dst], moved])
+    return splits
 
 
 def get_client_partitions(

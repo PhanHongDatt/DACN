@@ -174,7 +174,8 @@ class BlockchainBridge:
         alpha: float,
         mean_data_size: float,
         round_num: int,
-        pool_eth: float
+        pool_eth: float,
+        exclude_client_indices: Optional[List[int]] = None,
     ) -> Dict[int, float]:
         """
         Bước 1: lọc P_honest qua reputation (binary gate)
@@ -186,11 +187,15 @@ class BlockchainBridge:
 
         Returns: {client_idx: w_new} chỉ cho P_honest
         """
+        exclude_set = set(exclude_client_indices or [])
+
         # ── Lọc P_honest ─────────────────────────────────────
         honest_indices: List[int]  = []
         honest_addrs:  List[str]   = []
 
         for i in range(n_clients):
+            if i in exclude_set:
+                continue
             _, is_honest = self.get_reputation(i)
             if is_honest:
                 honest_indices.append(i)

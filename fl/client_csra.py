@@ -1,7 +1,7 @@
 """
-client_csra.py — Improved Flower client implementation based on the CSRA framework.
-This client adds reporting for model update variance and a bidding mechanism 
-to support fair economic incentives and anomaly detection.
+client_csra.py — Flower client implementation based on the CSRA framework.
+This client reports update-delta statistics and a bidding signal to support
+fair economic incentives and anomaly detection.
 """
 import numpy as np
 import torch
@@ -32,7 +32,9 @@ class FLClientCSRA(fl.client.NumPyClient):
         test_loader: DataLoader,
         client_type: str = "honest",
         fl_cfg: FLConfig = None,
-        bid_base: float = 0.05
+        bid_base: float = 0.05,
+        free_rider_mode: str = "noise",
+        free_rider_noise_std: float = 0.05,
     ):
         self.client_id = client_id
         self.dataset = dataset_name
@@ -44,6 +46,8 @@ class FLClientCSRA(fl.client.NumPyClient):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         self.data_size = len(train_loader.dataset)
+        self.free_rider_mode = free_rider_mode
+        self.free_rider_noise_std = float(free_rider_noise_std)
         
         # CSRA Bidding: Honest clients bid their true cost, 
         # while malicious ones might underbid to stay in the selection pool.
@@ -59,28 +63,33 @@ class FLClientCSRA(fl.client.NumPyClient):
         
         Metadata includes:
             - quality_score: Improvement in local loss (Delta loss).
-            - variance: Statistical variance of the model updates (used for DCD).
+            - anomaly_score/update_norm: L2 norm of local update delta.
+            - variance: Backward-compatible alias of anomaly_score.
             - bid: The requested reward for this round.
         """
+        global_params = [np.array(p, copy=True) for p in parameters]
         set_parameters(self.model, parameters)
         
         if self.client_type == "free_rider":
-            # Simulate a free-rider by adding high-variance noise to the global parameters.
-            # This triggers the Variance-based Detection (DCD) at the server.
-            noisy_params = [p + np.random.normal(0, 0.5, p.shape).astype(p.dtype)
-                            for p in parameters]
-            
-            # Compute variance of the injected noise.
-            flat_update = np.concatenate([p.flatten() for p in noisy_params])
-            variance = float(np.var(flat_update))
+            if self.free_rider_mode == "copy":
+                updated_params = [np.array(p, copy=True) for p in global_params]
+            else:
+                updated_params = [
+                    p + np.random.normal(0, self.free_rider_noise_std, p.shape).astype(p.dtype)
+                    for p in global_params
+                ]
+
+            anomaly_score = self._delta_norm(updated_params, global_params)
             
             return (
-                noisy_params,
+                updated_params,
                 self.data_size,
                 {
                     "quality_score": 0.01, # Small fake quality score
-                    "data_size": self.data_size,
-                    "variance": variance,
+                    "data_size": 0,
+                    "anomaly_score": anomaly_score,
+                    "update_norm": anomaly_score,
+                    "variance": anomaly_score,
                     "bid": self.bid,
                     "client_type": self.client_type
                 }
@@ -94,6 +103,8 @@ class FLClientCSRA(fl.client.NumPyClient):
         self.model.train()
         for _ in range(self.cfg.local_epochs):
             for X, y in self.train_loader:
+                if X.size(0) < 2:
+                    continue
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
                 loss = criterion(self.model(X), y)
@@ -103,11 +114,8 @@ class FLClientCSRA(fl.client.NumPyClient):
         loss_after = self._eval_loss()
         quality = float(max(0.0, loss_before - loss_after))
         
-        # Compute the statistical variance of the learned parameters.
-        # This helps the server distinguish between actual learning and random noise.
         current_params = get_parameters(self.model)
-        flat_params = np.concatenate([p.flatten() for p in current_params])
-        variance = float(np.var(flat_params))
+        anomaly_score = self._delta_norm(current_params, global_params)
 
         return (
             current_params,
@@ -115,11 +123,24 @@ class FLClientCSRA(fl.client.NumPyClient):
             {
                 "quality_score": quality,
                 "data_size": self.data_size,
-                "variance": variance,
+                "anomaly_score": anomaly_score,
+                "update_norm": anomaly_score,
+                "variance": anomaly_score,
                 "bid": self.bid,
                 "client_type": self.client_type
             }
         )
+
+    @staticmethod
+    def _delta_norm(local_params, global_params) -> float:
+        """Return the L2 norm of the model update delta."""
+        deltas = [
+            (local.astype(np.float64, copy=False) - base.astype(np.float64, copy=False)).ravel()
+            for local, base in zip(local_params, global_params)
+        ]
+        if not deltas:
+            return 0.0
+        return float(np.linalg.norm(np.concatenate(deltas)))
 
     def evaluate(self, parameters, config):
         """Evaluates the model on local test data."""
