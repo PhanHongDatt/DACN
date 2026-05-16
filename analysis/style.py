@@ -20,11 +20,20 @@ CONFIG_LABELS = {
     "C-CSRA-Opt": "CSRA-DCD Reward (Optimized)",
     "TrimmedMean": "TrimmedMean Robust FL",
 }
+CONFIG_ORDER = ["A", "B", "TrimmedMean", "C", "C-CSRA", "C-CSRA-Opt"]
 ALPHA_COLORS = {
     0.0: "#9E9E9E", 0.3: "#42A5F5", 0.5: "#66BB6A",
     0.7: "#FFA726", 1.0: "#EF5350",
 }
 TYPE_COLORS = {"honest": "#4A90D9", "free_rider": "#E07070", "lazy": "#FFA726"}
+
+
+def ordered_configs(configs):
+    """Return configs in report-friendly baseline order."""
+    present = list(dict.fromkeys(configs))
+    known = [cfg for cfg in CONFIG_ORDER if cfg in present]
+    extra = sorted(cfg for cfg in present if cfg not in CONFIG_ORDER)
+    return known + extra
 
 
 def apply_style():

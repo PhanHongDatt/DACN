@@ -36,6 +36,8 @@ _CONFIG_LABEL   = {
     "C-CSRA-Opt": "CSRA-DCD Reward (Optimized)",
     "TrimmedMean": "TrimmedMean Robust FL",
 }
+_MALICIOUS_CLIENT_TYPES = {"free_rider", "lazy", "label_noise", "malicious"}
+_SCENARIO_ORDER = {"K1": 1, "K2": 2, "K3": 3}
 
 
 def _parse_filename(fname: str) -> dict | None:
@@ -140,17 +142,54 @@ def load_all_logs(log_dir: Path) -> pd.DataFrame | None:
         if col in combined.columns:
             combined[col] = pd.to_numeric(combined[col], errors="coerce")
     if "is_honest" in combined.columns:
-        combined["is_honest"] = combined["is_honest"].astype(bool)
+        combined["is_honest"] = (
+            pd.to_numeric(combined["is_honest"], errors="coerce")
+            .fillna(0)
+            .astype(bool)
+        )
     if "is_anomaly" in combined.columns:
         combined["is_anomaly"] = pd.to_numeric(combined["is_anomaly"], errors="coerce").fillna(0).astype(bool)
 
-    # Detect attack runs (any malicious client present)
+    # Human-readable scenario key. K3 must keep dirichlet_alpha separate;
+    # otherwise plots/report would average alpha=0.1 and alpha=0.5 together.
+    if "scenario" in combined.columns and "dirichlet_alpha" in combined.columns:
+        def _variant(row):
+            if row["scenario"] == "K3":
+                return f"K3 (dirichlet={float(row['dirichlet_alpha']):g})"
+            return str(row["scenario"])
+
+        combined["scenario_variant"] = combined.apply(_variant, axis=1)
+    elif "scenario" in combined.columns:
+        combined["scenario_variant"] = combined["scenario"].astype(str)
+
+    # Detect attack runs from client metadata. Filenames intentionally do not
+    # encode attack mode, so this run-level label is required for correct groupby.
     if "client_type" in combined.columns:
+        combined["client_type"] = combined["client_type"].fillna("unknown").astype(str)
+        combined["is_malicious"] = combined["client_type"].isin(_MALICIOUS_CLIENT_TYPES)
         attack_run_ids = combined.loc[
-            combined["client_type"].isin(["free_rider", "lazy"]), "run_id"
+            combined["is_malicious"], "run_id"
         ].unique()
         combined["has_attack"] = combined["run_id"].isin(attack_run_ids)
+        combined["attack_label"] = combined["has_attack"].map({True: "attack", False: "clean"})
+    else:
+        combined["is_malicious"] = False
+        combined["has_attack"] = False
+        combined["attack_label"] = "clean"
 
-    combined.sort_values(["dataset", "scenario", "config", "alpha", "dirichlet_alpha", "round_num"], inplace=True)
+    run_meta = combined.groupby("run_id").agg(
+        run_rounds_observed=("round_num", "nunique"),
+        run_max_round=("round_num", "max"),
+        run_rows_observed=("run_id", "size"),
+    )
+    combined = combined.merge(run_meta, left_on="run_id", right_index=True, how="left")
+
+    sort_cols = [
+        "dataset", "scenario", "dirichlet_alpha", "attack_label",
+        "config", "alpha", "round_num", "client_id",
+    ]
+    combined["_scenario_sort"] = combined["scenario"].map(_SCENARIO_ORDER).fillna(99)
+    combined.sort_values([c for c in sort_cols if c in combined.columns], inplace=True)
+    combined.drop(columns=["_scenario_sort"], errors="ignore", inplace=True)
     combined.reset_index(drop=True, inplace=True)
     return combined
