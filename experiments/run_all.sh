@@ -12,8 +12,9 @@ set -uo pipefail
 ROUNDS_WAS_SET="${ROUNDS+x}"
 LOG_DIR="${LOG_DIR:-./results/logs}"
 N_CLIENTS="${N_CLIENTS:-10}"
+LOCAL_EPOCHS="${LOCAL_EPOCHS:-1}"         # Đã giảm xuống 1 (xem PLAN §10.3 đòn bẩy 1)
 TRIM_RATIO="${TRIM_RATIO:-0.1}"
-ROUNDS="${ROUNDS:-50}"
+ROUNDS="${ROUNDS:-30}"                    # Đã giảm 50→30 (PLAN §10.3 đòn bẩy 3)
 SEEDS="${SEEDS:-42,123,2024}"             # clean seeds, comma-separated
 ATTACK_SEEDS="${ATTACK_SEEDS:-42,123}"    # attack seeds (ít hơn để tiết kiệm)
 SWEEP_SEEDS="${SWEEP_SEEDS:-42,123,2024}" # β-sweep seeds
@@ -28,6 +29,11 @@ SWEEP_BETAS="${SWEEP_BETAS:-0.3,0.5,0.7}"
 
 # Attack client IDs (default: 2 client cuối cho mọi attack)
 ATTACK_IDS="${ATTACK_IDS:-8,9}"
+
+# Parallelism (cho VM nhiều core)
+# Khuyến nghị cho 8 core VM: PARALLEL=4 NUM_THREADS=2
+PARALLEL="${PARALLEL:-1}"
+NUM_THREADS="${NUM_THREADS:-0}"  # 0 = PyTorch default
 
 # ── Mode ─────────────────────────────────────────────────────────────────────
 MODE=""
@@ -74,6 +80,11 @@ Other options:
   --skip-env-check   Bỏ qua check Python env.
   -h, --help         Help.
 
+Performance overrides (biến môi trường):
+  PARALLEL=4 NUM_THREADS=2   # 4 cells song song, 2 thread/job (cho VM 8 core)
+  ROUNDS=25 LOCAL_EPOCHS=1   # giảm rounds + epochs để chạy nhanh hơn
+  SEEDS=42,123               # giảm seed count
+
 Useful overrides (biến môi trường):
   SEEDS=42,123      ROUNDS=20  N_CLIENTS=10  LOG_DIR=./results/exp1
   BETA=0.5 GAMMA=0.3 DELTA=0.2
@@ -84,6 +95,10 @@ Examples:
   bash experiments/run_all.sh --quick
   bash experiments/run_all.sh --full --no-cifar --resume
   bash experiments/run_all.sh --full --attack-only --resume
+
+  # VM 8 core: 4 parallel cells, 2 threads mỗi cell (rút ~4x time)
+  PARALLEL=4 NUM_THREADS=2 \\
+    bash experiments/run_all.sh --full --no-cifar --resume
 EOF
 }
 
@@ -129,7 +144,7 @@ if [ -z "$ROUNDS_WAS_SET" ]; then
   case "$MODE" in
     smoke) ROUNDS=3 ;;
     quick) ROUNDS=10 ;;
-    *)     ROUNDS=50 ;;
+    *)     ROUNDS=30 ;;   # PLAN §10.3 đòn bẩy 3: giảm 50→30 cho MNIST/F-MNIST
   esac
 fi
 
@@ -254,8 +269,10 @@ run() {
     --seed "$seed"
     --n-clients "$N_CLIENTS"
     --n-rounds "$ROUNDS"
+    --local-epochs "$LOCAL_EPOCHS"
     --trim-ratio "$TRIM_RATIO"
     --log-dir "$LOG_DIR"
+    --num-threads "$NUM_THREADS"
   )
   if [ -n "$da" ]; then
     cmd_args+=(--dirichlet-alpha "$da")
@@ -270,12 +287,26 @@ run() {
 
   [ "$DRY_RUN" -eq 1 ] && return 0
 
-  if python -m experiments.run_experiment "${cmd_args[@]}"; then
-    PASS=$((PASS+1))
-    echo "OK"
+  if [ "$PARALLEL" -gt 1 ]; then
+    # Parallel mode: chờ slot trống rồi launch background
+    while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do
+      sleep 1
+    done
+    (
+      if python -m experiments.run_experiment "${cmd_args[@]}" > /dev/null 2>&1; then
+        echo "[OK]   $desc"
+      else
+        echo "[FAIL] $desc" >&2
+      fi
+    ) &
   else
-    FAIL=$((FAIL+1))
-    echo "FAIL — tiếp tục run tiếp theo" >&2
+    if python -m experiments.run_experiment "${cmd_args[@]}"; then
+      PASS=$((PASS+1))
+      echo "OK"
+    else
+      FAIL=$((FAIL+1))
+      echo "FAIL — tiếp tục run tiếp theo" >&2
+    fi
   fi
 }
 
@@ -432,14 +463,18 @@ trap summary EXIT
 echo "════════════════════════════════════════"
 echo "  FL Reward Refactor — Experiment Launcher"
 echo "  Mode    : $MODE"
-echo "  Rounds  : $ROUNDS"
+echo "  Rounds  : $ROUNDS    Local epochs: $LOCAL_EPOCHS"
 echo "  Seeds   : $SEEDS  (attack: $ATTACK_SEEDS)"
 echo "  Log dir : $LOG_DIR"
 echo "  Cells   : 6 (M1-M6)"
 echo "  Subsets : clean=$INCLUDE_CLEAN attack=$INCLUDE_ATTACK sweep=$INCLUDE_SWEEP cifar=$INCLUDE_CIFAR"
 echo "  Resume  : $RESUME    Dry-run: $DRY_RUN"
 echo "  Chain   : $([ -z "$NO_BLOCKCHAIN_FLAG" ] && echo "on" || echo "off")"
+echo "  Parallel: $PARALLEL  (threads/job: $NUM_THREADS)"
 echo "════════════════════════════════════════"
+
+# Cleanup background jobs on Ctrl+C
+trap 'echo ""; echo "Interrupted — killing background jobs..."; kill $(jobs -p) 2>/dev/null; exit 1' INT TERM
 
 check_environment
 check_chain
@@ -449,3 +484,10 @@ case "$MODE" in
   quick) run_quick ;;
   full)  run_full ;;
 esac
+
+# Đợi mọi background job kết thúc (parallel mode)
+if [ "$PARALLEL" -gt 1 ]; then
+  echo ""
+  echo "Đang chờ các parallel job hoàn tất..."
+  wait
+fi

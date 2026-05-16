@@ -115,6 +115,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-blockchain", action="store_true",
                    help="Disable blockchain audit (mọi reward chỉ trong CSV)")
     p.add_argument("--log-dir", default="./results/logs")
+    p.add_argument("--num-threads", type=int, default=0,
+                   help="PyTorch thread limit (0 = default of PyTorch). "
+                        "Khi chạy nhiều cells song song: set 2 nếu VM có 8 cores + parallel=4.")
 
     return p.parse_args()
 
@@ -164,6 +167,15 @@ def main() -> None:
                 f"beta + gamma + delta must equal 1.0, got {weight_sum:.6f} "
                 f"(β={args.beta} γ={args.gamma} δ={args.delta})"
             )
+
+    # ── Thread limit (cho chạy parallel nhiều cells) ─────────────────────
+    if args.num_threads > 0:
+        torch.set_num_threads(args.num_threads)
+        # Một số BLAS backend dùng env var, set trước khi import nếu cần
+        os.environ.setdefault("OMP_NUM_THREADS", str(args.num_threads))
+        os.environ.setdefault("MKL_NUM_THREADS", str(args.num_threads))
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", str(args.num_threads))
+        logger.info(f"Thread limit set to {args.num_threads}")
 
     # ── Seed ─────────────────────────────────────────────────────────────
     torch.manual_seed(args.seed)
