@@ -30,6 +30,10 @@ SWEEP_BETAS="${SWEEP_BETAS:-0.3,0.5,0.7}"
 # Attack client IDs (default: 2 client cuối cho mọi attack)
 ATTACK_IDS="${ATTACK_IDS:-8,9}"
 
+# Data heterogeneity pattern — cần thiết cho M2/M4 trên K1/K2
+# (xem PLAN.md §5 + commit message "data imbalance feature")
+DATA_IMBALANCE="${DATA_IMBALANCE:-lognormal}"
+
 # Parallelism (cho VM nhiều core)
 # Khuyến nghị cho 8 core VM: PARALLEL=4 NUM_THREADS=2
 PARALLEL="${PARALLEL:-1}"
@@ -273,6 +277,7 @@ run() {
     --trim-ratio "$TRIM_RATIO"
     --log-dir "$LOG_DIR"
     --num-threads "$NUM_THREADS"
+    --data-imbalance "$DATA_IMBALANCE"
   )
   if [ -n "$da" ]; then
     cmd_args+=(--dirichlet-alpha "$da")
@@ -471,6 +476,7 @@ echo "  Subsets : clean=$INCLUDE_CLEAN attack=$INCLUDE_ATTACK sweep=$INCLUDE_SWE
 echo "  Resume  : $RESUME    Dry-run: $DRY_RUN"
 echo "  Chain   : $([ -z "$NO_BLOCKCHAIN_FLAG" ] && echo "on" || echo "off")"
 echo "  Parallel: $PARALLEL  (threads/job: $NUM_THREADS)"
+echo "  Data imb: $DATA_IMBALANCE"
 echo "════════════════════════════════════════"
 
 # Cleanup background jobs on Ctrl+C

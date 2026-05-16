@@ -108,6 +108,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-rounds", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--local-epochs", type=int, default=2)
+    p.add_argument("--data-imbalance", default="lognormal",
+                   choices=["uniform", "linear", "lognormal", "step"],
+                   help="Pattern phân phối size client (cần thiết cho M2/M4 có "
+                        "variance trên K1/K2)")
 
     # Misc
     p.add_argument("--seed", type=int, required=True,
@@ -193,6 +197,8 @@ def main() -> None:
         # Clear legacy lists — new runner dùng client_attacks.py thay vì data noise
         noise_clients=[],
         lazy_client_ids=[],
+        # Schema v2: data size heterogeneity (cần cho M2/M4)
+        data_imbalance=args.data_imbalance,
     )
     if args.dirichlet_alpha is not None:
         exp_cfg.dirichlet_beta = args.dirichlet_alpha
