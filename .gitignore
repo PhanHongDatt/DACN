@@ -19,5 +19,8 @@ results/plots/**/*.png
 !results/plots/.gitkeep
 results/*.csv
 results/*.md
+results/smoke/
+results/smoke6/
+results/logs_legacy/
 fl/contract_addresses.json
 *.log

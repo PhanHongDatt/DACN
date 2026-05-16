@@ -2,7 +2,17 @@
 
 Dự án: **Cải tiến cơ chế phân phối phần thưởng dựa trên đóng góp đa chiều trong hệ thống Federated Learning kết hợp Blockchain**.
 
-Hệ thống mô phỏng Federated Learning bằng Flower, ghi nhận đóng góp và phân phối reward qua smart contract Solidity chạy trên Hardhat. Phiên bản hiện tại tập trung so sánh thuật toán đề xuất **CSRA + Blockchain minh bạch** với các baseline phù hợp: **FedAvg**, **BlockchainQuality** và **TrimmedMean**.
+Hệ thống mô phỏng Federated Learning bằng Flower, ghi nhận đóng góp và phân phối reward qua smart contract Solidity chạy trên Hardhat.
+
+> **Schema v2 — refactor reward policies** _(đang triển khai trên branch `refactor/reward-policies`)_
+>
+> Pipeline được tái thiết kế thành 2 chiều độc lập:
+> - **Aggregation method**: `fedavg | trimmed | csra_dcd`
+> - **Reward policy**: `equal | data | quality | csra` (CSRA = 3-chiều `β·quality + γ·data + δ·reputation`)
+>
+> Blockchain đóng vai trò audit/log/distribute layer, không phải hyperparameter so sánh.
+>
+> Chi tiết: [`docs/PLAN.md`](docs/PLAN.md).
 
 ---
 
@@ -20,32 +30,29 @@ Mục tiêu chính của hệ thống:
 
 ```mermaid
 flowchart TB
-    CLI["Experiment Launcher<br/>experiments/run_all.sh"] --> Runners["Experiment Runners<br/>run_experiment.py<br/>run_experiment_csra.py<br/>run_experiment_trimmed.py"]
+    CLI["Launcher<br/>experiments/run_all.sh"] --> Runner["Unified Runner<br/>experiments/run_experiment.py"]
 
-    Runners --> Data["Data Pipeline<br/>fl/data_utils.py<br/>K1 IID, K2 Weak Non-IID, K3 Dirichlet"]
-    Runners --> Sim["Flower Simulation"]
+    Runner --> Data["Data Pipeline<br/>fl/data_utils.py"]
+    Runner --> Sim["Local Sequential Sim<br/>fl/simulation_local.py"]
 
-    Data --> Clients["FL Clients<br/>FLClient / FLClientCSRA"]
+    Data --> Clients["Client Hierarchy<br/>fl/client_attacks.py<br/>(Honest, FreeRider, Lazy,<br/>LabelNoise, SignFlip)"]
     Clients --> Sim
 
-    Sim --> FedAvg["FedAvg / BlockchainQuality<br/>fl/server.py"]
-    Sim --> CSRA["CSRA Strategy<br/>fl/server_csra.py"]
-    Sim --> Trimmed["TrimmedMean Baseline<br/>fl/server_trimmed.py"]
+    Sim --> Strategy["FLUnifiedStrategy<br/>fl/server_base.py"]
 
-    CSRA --> DCD["CSRA-DCD<br/>Update Delta L2 Norm + MAD"]
-    DCD --> Filter["Filter abnormal clients<br/>Exclude aggregation + reward"]
-    Filter --> RWA["Reputation-weighted aggregation"]
+    Strategy --> Agg["Aggregation Method<br/>fl/aggregation_methods.py<br/>(fedavg | trimmed | csra_dcd)"]
+    Strategy --> Reward["Reward Policy<br/>fl/reward_policies.py<br/>(equal | data | quality | csra)"]
 
-    FedAvg --> Bridge["BlockchainBridge<br/>fl/blockchain.py"]
-    CSRA --> Bridge
+    Agg --> Filter["Anomaly Mask<br/>(post-filter valid clients)"]
+    Filter --> Reward
 
-    Bridge --> Store["ContributionStore.sol<br/>Contribution + Reputation"]
-    Bridge --> Reward["RewardDistributor.sol<br/>ETH Reward Distribution"]
-    Bridge --> Registry["FLRegistry.sol<br/>Experiment Metadata"]
+    Reward --> Bridge["BlockchainBridge (optional)<br/>fl/blockchain.py<br/>audit-only mode"]
 
-    FedAvg --> Logs["CSV Logs<br/>results/logs"]
-    CSRA --> Logs
-    Trimmed --> Logs
+    Bridge --> Store["ContributionStore.sol"]
+    Bridge --> RewardC["RewardDistributor.sol"]
+    Bridge --> Registry["FLRegistry.sol"]
+
+    Strategy --> Logs["CSV Logs<br/>results/logs/<br/>schema v2"]
 
     Logs --> Analysis["Analysis Pipeline<br/>analyze_results.py<br/>analysis/loader.py, stats.py, plots.py"]
     Analysis --> Outputs["Reports + Plots<br/>results/summary_metrics.csv<br/>results/fairness_metrics.csv<br/>results/analysis_report.md<br/>results/plots"]
@@ -156,39 +163,50 @@ Có thể override bằng biến môi trường:
 ROUNDS=20 SEED=123 LOG_DIR=./results/logs bash experiments/run_all.sh --quick --resume
 ```
 
-### 5.2. Chạy Một Experiment Đơn Lẻ
+### 5.2. Chạy Một Experiment Đơn Lẻ (Schema v2)
 
-FedAvg không blockchain:
+Mọi experiment dùng chung **một runner duy nhất** với cờ `--aggregation` và `--reward-policy`.
+
+M1 — FedAvg + EqualSplit (baseline trần):
 
 ```bash
-python experiments/run_experiment.py \
-  --dataset mnist --scenario K1 --config A --alpha 0.0 --no-blockchain \
-  --n-rounds 10
+python -m experiments.run_experiment \
+  --dataset mnist --scenario K1 \
+  --aggregation fedavg --reward-policy equal \
+  --seed 42 --n-rounds 10 --no-blockchain
 ```
 
-BlockchainQuality:
+M4 — FedAvg + CSRAReward 3-chiều (ablation: chỉ reward formula):
 
 ```bash
-python experiments/run_experiment.py \
+python -m experiments.run_experiment \
   --dataset mnist --scenario K3 --dirichlet-alpha 0.1 \
-  --config B --alpha 1.0 --n-rounds 10
+  --aggregation fedavg --reward-policy csra \
+  --beta 0.5 --gamma 0.3 --delta 0.2 \
+  --seed 42 --n-rounds 10 --no-blockchain
 ```
 
-CSRA defense:
+M6 — CSRA-DCD + CSRAReward (hệ thống đầy đủ với attack):
 
 ```bash
-python experiments/run_experiment_csra.py \
+python -m experiments.run_experiment \
   --dataset mnist --scenario K3 --dirichlet-alpha 0.1 \
-  --config C --alpha 0.5 --with-freeriders --n-rounds 10
+  --aggregation csra_dcd --reward-policy csra \
+  --beta 0.5 --gamma 0.3 --delta 0.2 \
+  --attack free_rider --attack-client-ids 8,9 \
+  --seed 42 --n-rounds 10 --no-blockchain
 ```
 
 TrimmedMean baseline:
 
 ```bash
-python experiments/run_experiment_trimmed.py \
+python -m experiments.run_experiment \
   --dataset mnist --scenario K3 --dirichlet-alpha 0.1 \
-  --config TrimmedMean --trim-ratio 0.1 --no-blockchain --n-rounds 10
+  --aggregation trimmed --reward-policy equal \
+  --trim-ratio 0.1 --seed 42 --n-rounds 10 --no-blockchain
 ```
+
+Toàn bộ flags: `python -m experiments.run_experiment --help`.
 
 ---
 
@@ -206,14 +224,20 @@ python experiments/run_experiment_trimmed.py \
 - `K2`: Weak Non-IID.
 - `K3`: Dirichlet Non-IID, dùng `--dirichlet-alpha`, khuyến nghị `0.5` và `0.1`.
 
-### Methods
+### Methods (Schema v2 — Ablation 2 chiều)
 
-| Method | Runner | Blockchain | Mục đích |
+Mọi cấu hình đều dùng `run_experiment.py` duy nhất với `--aggregation` × `--reward-policy`:
+
+| ID | Aggregation | Reward Policy | Vai trò |
 | --- | --- | --- | --- |
-| `A` FedAvg | `run_experiment.py` | Không | Baseline FL truyền thống |
-| `B` BlockchainQuality | `run_experiment.py` | Có | FedAvg + reward theo quality/data/reputation |
-| `TrimmedMean` | `run_experiment_trimmed.py` | Không | Robust aggregation baseline |
-| `C-CSRA-Opt` | `run_experiment_csra.py` | Có | Thuật toán đề xuất CSRA-DCD + blockchain minh bạch |
+| **M1** | `fedavg` | `equal` | Baseline trần |
+| **M2** | `fedavg` | `data` | Bias data quantity |
+| **M3** | `fedavg` | `quality` | Bias quality (nhạy noise) |
+| **M4** | `fedavg` | `csra` | Ablation: chỉ reward formula |
+| **M5** | `csra_dcd` | `equal` | Ablation: chỉ filtering |
+| **M6** | `csra_dcd` | `csra` | **Hệ thống đề xuất** |
+
+Attack types: `clean | free_rider | lazy | label_noise | sign_flip` (via `--attack`).
 
 ---
 
@@ -249,10 +273,18 @@ Nếu `z_i > --mad-threshold`, client bị đánh dấu anomaly. Client bị ano
 W_new = alpha * quality_norm + (1 - alpha) * data_size_norm
 ```
 
-Mặc định CSRA dùng alpha tĩnh. Có thể bật alpha động bằng:
+**Sweep β cho CSRAReward:**
 
 ```bash
-python experiments/run_experiment_csra.py ... --dynamic-alpha
+for beta in 0.3 0.5 0.7; do
+  gamma=$(python -c "print(round((1 - $beta) * 3/5, 4))")
+  delta=$(python -c "print(round((1 - $beta) * 2/5, 4))")
+  python -m experiments.run_experiment \
+    --dataset mnist --scenario K3 --dirichlet-alpha 0.1 \
+    --aggregation fedavg --reward-policy csra \
+    --beta $beta --gamma $gamma --delta $delta \
+    --seed 42 --n-rounds 10 --no-blockchain
+done
 ```
 
 ---
@@ -294,13 +326,21 @@ Metrics đáng chú ý:
 
 ```text
 contracts/      Smart contracts Solidity
-fl/             Core FL, clients, strategies, blockchain bridge, metrics
-experiments/    Experiment runners và run_all launcher
+fl/             Core modules:
+                  - reward_policies.py    (4 reward policies)
+                  - aggregation_methods.py (3 aggregation strategies)
+                  - client_attacks.py      (Honest + 4 attack subclasses)
+                  - server_base.py         (Unified strategy)
+                  - simulation_local.py    (Sequential sim, no ray)
+                  - blockchain.py          (Audit-only bridge)
+                  - logger.py              (CSV schema v2)
+                  - data_utils.py, models.py, metrics.py, normalization.py, config.py
+experiments/    run_experiment.py (unified) + run_all.sh (launcher)
 analysis/       Loader, statistics, plots, report generator
 scripts/        Deploy, fund, healthcheck, environment check
 tests/          Unit tests, contract tests, integration tests
 results/        Logs, summaries, plots
-docs/           Setup notes
+docs/           PLAN.md (refactor plan), SETUP.md (env)
 ```
 
 ---

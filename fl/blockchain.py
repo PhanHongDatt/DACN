@@ -166,6 +166,67 @@ class BlockchainBridge:
             logger.warning(f"getReputation failed for client {client_idx}: {e}")
             return 0.0, True  # fail-open: không phạt client nếu lỗi đọc
 
+    # ── Audit-only distribute (new refactor API) ──────────────
+    def distribute_audit(
+        self,
+        rewards_eth: Dict[int, float],
+        round_num: int,
+    ) -> bool:
+        """
+        Audit-only: forward đã-tính-sẵn rewards lên RewardDistributor contract.
+
+        Khác với filter_and_distribute (legacy), method này KHÔNG tự tính trọng số
+        — chỉ làm vai trò audit/log/transfer. Logic filter + reward formula nằm ở
+        server_base (Python), giữ blockchain ở vai trò minh bạch hoá đúng nghĩa.
+
+        Args:
+            rewards_eth: {client_idx: reward_in_ETH} chỉ cho valid clients
+            round_num: round hiện tại
+
+        Returns:
+            True nếu transaction thành công, False nếu thất bại.
+        """
+        if not rewards_eth:
+            logger.warning(f"Round {round_num}: rewards_eth rỗng, bỏ qua audit")
+            return False
+
+        total_eth = sum(rewards_eth.values())
+        if total_eth <= 0:
+            logger.warning(f"Round {round_num}: total reward = 0, bỏ qua audit")
+            return False
+
+        client_indices = sorted(rewards_eth.keys())
+        addresses = [self.client_address(cid) for cid in client_indices]
+
+        # Convert absolute ETH → integer weights (SCALE-based fractions)
+        weights_scaled = [
+            int((rewards_eth[cid] / total_eth) * SCALE) for cid in client_indices
+        ]
+        # Sửa rounding error để tổng đúng = SCALE
+        scaled_sum = sum(weights_scaled)
+        if scaled_sum == 0:
+            logger.error(f"Round {round_num}: weights_scaled tổng = 0")
+            return False
+        if scaled_sum != SCALE and weights_scaled:
+            weights_scaled[-1] = max(0, weights_scaled[-1] + (SCALE - scaled_sum))
+
+        pool_wei = self.w3.to_wei(total_eth, "ether")
+        ok = self._transact(
+            self.dist.functions.distributeRewards(
+                addresses, weights_scaled, round_num,
+            ),
+            gas=self.cfg.gas_limit,
+            value_wei=pool_wei,
+        )
+        if not ok:
+            logger.error(f"Round {round_num}: distribute_audit thất bại")
+        else:
+            logger.info(
+                f"Round {round_num}: audit distributed {total_eth:.4f} ETH "
+                f"to {len(client_indices)} clients (audit-only mode)"
+            )
+        return ok
+
     def filter_and_distribute(
         self,
         n_clients: int,
