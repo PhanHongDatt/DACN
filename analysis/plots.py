@@ -17,10 +17,11 @@ import pandas as pd
 from analysis.style import (
     apply_style, save_fig, moving_avg, ci95,
     CONFIG_COLORS, CONFIG_LABELS, ALPHA_COLORS, TYPE_COLORS,
+    ordered_configs,
 )
-from analysis.stats import (
-    jain_fairness_index, gini_coefficient,
-    reward_quality_correlation, fairness_gap,
+from fl.metrics import (
+    jain_index, gini_coefficient,
+    contribution_reward_correlation, fairness_gap,
 )
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,50 @@ def _datasets(df):
 
 def _scenarios(df):
     return sorted(df["scenario"].unique())
+
+
+def _scenario_variants(df):
+    """Return scenario labels without merging K3 dirichlet settings."""
+    col = "scenario_variant" if "scenario_variant" in df.columns else "scenario"
+    if col not in df.columns:
+        return []
+    order = {"K1": 1, "K2": 2, "K3": 3}
+    cols = [c for c in ["scenario", col, "dirichlet_alpha"] if c in df.columns]
+    variants = df[cols].drop_duplicates()
+    if "scenario" in variants.columns:
+        variants["_scenario_order"] = variants["scenario"].map(order).fillna(99)
+    else:
+        variants["_scenario_order"] = 99
+    if "dirichlet_alpha" not in variants.columns:
+        variants["dirichlet_alpha"] = 0.0
+    variants = variants.sort_values(["_scenario_order", "dirichlet_alpha", col])
+    return variants[col].astype(str).tolist()
+
+
+def _variant_col(df):
+    return "scenario_variant" if "scenario_variant" in df.columns else "scenario"
+
+
+def _clean_view(df):
+    if "attack_label" not in df.columns:
+        return df
+    clean = df[df["attack_label"] == "clean"]
+    return clean if not clean.empty else df
+
+
+def _plot_label_suffix(df):
+    return " (clean runs)" if "attack_label" in df.columns and (df["attack_label"] == "attack").any() else ""
+
+
+def _safe_name(value):
+    return (
+        str(value)
+        .replace(" ", "_")
+        .replace("(", "")
+        .replace(")", "")
+        .replace("=", "")
+        .replace(".", "p")
+    )
 
 
 def _acc_by_round(grp: pd.DataFrame) -> pd.Series:
@@ -67,36 +112,51 @@ def plot_baseline_comparison(df, out_dir, dpi=200, smooth=0, ci=False, **_):
     out_dir = Path(out_dir)
 
     for ds in _datasets(df):
-        sub = df[df["dataset"] == ds]
-        scenarios = _scenarios(sub)
-        configs   = sorted(sub["config"].unique())
+        sub = _clean_view(df[df["dataset"] == ds])
+        scenario_col = _variant_col(sub)
+        scenarios = _scenario_variants(sub)
+        configs   = ordered_configs(sub["config"].unique())
 
         # ── 1a: accuracy curves ───────────────────────────────────────────────
         fig, axes = plt.subplots(1, len(scenarios), figsize=(5 * len(scenarios), 4), squeeze=False)
-        fig.suptitle(f"Global Accuracy vs Round — {ds}", fontweight="bold")
+        fig.suptitle(f"Global Accuracy vs Round — {ds}{_plot_label_suffix(df[df['dataset'] == ds])}", fontweight="bold")
 
         for col_i, sc in enumerate(scenarios):
             ax = axes[0][col_i]
-            ax.set_title(f"Scenario {sc}")
+            ax.set_title(str(sc))
             ax.set_xlabel("Round")
             ax.set_ylabel("Global Accuracy")
 
-            sc_df = sub[sub["scenario"] == sc]
+            sc_df = sub[sub[scenario_col].astype(str) == str(sc)]
             for cfg in configs:
                 cfg_df = sc_df[sc_df["config"] == cfg]
                 if cfg_df.empty:
                     continue
-                # Aggregate across multiple runs (same config may have diff alpha)
                 by_round = cfg_df.groupby("round_num")["global_accuracy"]
                 mean_s   = by_round.mean()
                 rounds   = mean_s.index.values
 
                 if ci:
-                    lo = by_round.mean() - 1.96 * by_round.std() / np.sqrt(by_round.count().clip(lower=1))
-                    hi = by_round.mean() + 1.96 * by_round.std() / np.sqrt(by_round.count().clip(lower=1))
-                    _plot_line_with_ci(ax, rounds, mean_s, lo, hi,
-                                       CONFIG_COLORS.get(cfg, "#888888"),
-                                       CONFIG_LABELS.get(cfg, cfg), smooth)
+                    # Smooth mean trước, rồi tính CI trên cùng window
+                    if smooth > 1:
+                        mean_smooth = mean_s.rolling(smooth, min_periods=1, center=True).mean()
+                        std_s = by_round.std()
+                        count_s = by_round.count().clip(lower=1)
+                        std_smooth = std_s.rolling(smooth, min_periods=1, center=True).mean()
+                        count_smooth = count_s.rolling(smooth, min_periods=1, center=True).mean()
+                        margin = 1.96 * std_smooth / np.sqrt(count_smooth)
+                        lo = mean_smooth - margin
+                        hi = mean_smooth + margin
+                        ax.plot(rounds, mean_smooth, color=CONFIG_COLORS.get(cfg, "#888888"),
+                                label=CONFIG_LABELS.get(cfg, cfg))
+                        ax.fill_between(rounds, lo, hi, alpha=0.15, color=CONFIG_COLORS.get(cfg, "#888888"))
+                    else:
+                        margin = 1.96 * by_round.std() / np.sqrt(by_round.count().clip(lower=1))
+                        lo = mean_s - margin
+                        hi = mean_s + margin
+                        _plot_line_with_ci(ax, rounds, mean_s, lo, hi,
+                                           CONFIG_COLORS.get(cfg, "#888888"),
+                                           CONFIG_LABELS.get(cfg, cfg), 0)
                 else:
                     y = moving_avg(mean_s, smooth) if smooth > 1 else mean_s
                     ax.plot(rounds, y, color=CONFIG_COLORS.get(cfg, "#888888"),
@@ -114,7 +174,7 @@ def plot_baseline_comparison(df, out_dir, dpi=200, smooth=0, ci=False, **_):
             return float(s.iloc[-1]) if not s.empty else np.nan
 
         final_acc = (
-            sub.groupby(["scenario", "config"])
+            sub.groupby([scenario_col, "config"])
             .apply(_last_valid_acc)
             .reset_index(name="final_accuracy")
         )
@@ -130,7 +190,7 @@ def plot_baseline_comparison(df, out_dir, dpi=200, smooth=0, ci=False, **_):
 
         for i, cfg in enumerate(configs):
             vals = [
-                final_acc[(final_acc["scenario"] == sc) & (final_acc["config"] == cfg)]["final_accuracy"].values
+                final_acc[(final_acc[scenario_col].astype(str) == str(sc)) & (final_acc["config"] == cfg)]["final_accuracy"].values
                 for sc in scenarios
             ]
             heights = [v[0] if len(v) > 0 else 0 for v in vals]
@@ -157,25 +217,28 @@ def plot_fairness_analysis(df, out_dir, dpi=200, smooth=0, ci=False, **_):
     2a. Reward distribution boxplot per config
     2b. Reward histogram
     2c. Jain fairness index bar chart
+    2d. Reward vs Quality scatter plot
     """
     out_dir = Path(out_dir)
 
     for ds in _datasets(df):
-        sub     = df[df["dataset"] == ds]
+        sub     = _clean_view(df[df["dataset"] == ds])
+        scenario_col = _variant_col(sub)
+        scenarios = _scenario_variants(sub)
         honest  = sub[sub["is_honest"]]
-        configs = sorted(sub["config"].unique())
+        configs = ordered_configs(sub["config"].unique())
 
         # ── 2a: boxplot ───────────────────────────────────────────────────────
-        fig, axes = plt.subplots(1, len(_scenarios(sub)), figsize=(5 * len(_scenarios(sub)), 4), squeeze=False)
-        fig.suptitle(f"Reward Distribution (Honest Clients) — {ds}", fontweight="bold")
+        fig, axes = plt.subplots(1, len(scenarios), figsize=(5 * len(scenarios), 4), squeeze=False)
+        fig.suptitle(f"Reward Distribution (Honest Clients) — {ds}{_plot_label_suffix(df[df['dataset'] == ds])}", fontweight="bold")
 
-        for col_i, sc in enumerate(_scenarios(sub)):
+        for col_i, sc in enumerate(scenarios):
             ax = axes[0][col_i]
-            ax.set_title(f"Scenario {sc}")
+            ax.set_title(str(sc))
             ax.set_xlabel("Config")
             ax.set_ylabel("Reward (ETH)")
             data = [
-                honest[(honest["scenario"] == sc) & (honest["config"] == cfg)]["reward_eth"].dropna().values
+                honest[(honest[scenario_col].astype(str) == str(sc)) & (honest["config"] == cfg)]["reward_eth"].dropna().values
                 for cfg in configs
             ]
             bp = ax.boxplot(data, patch_artist=True, notch=False, widths=0.5)
@@ -206,11 +269,11 @@ def plot_fairness_analysis(df, out_dir, dpi=200, smooth=0, ci=False, **_):
 
         # ── 2c: Jain index bar chart ──────────────────────────────────────────
         jain_records = []
-        for (sc, cfg, alpha), grp in honest.groupby(["scenario", "config", "alpha"]):
+        for (sc, cfg, alpha), grp in honest.groupby([scenario_col, "config", "alpha"]):
             r = grp["reward_eth"].dropna().values
             jain_records.append({
-                "scenario": sc, "config": cfg, "alpha": alpha,
-                "jain": jain_fairness_index(r),
+                scenario_col: sc, "config": cfg, "alpha": alpha,
+                "jain": jain_index(r),
                 "gini": gini_coefficient(r),
             })
         if not jain_records:
@@ -218,9 +281,9 @@ def plot_fairness_analysis(df, out_dir, dpi=200, smooth=0, ci=False, **_):
 
         jdf = pd.DataFrame(jain_records)
         # Average over alpha for the bar chart
-        jmean = jdf.groupby(["scenario", "config"])[["jain", "gini"]].mean().reset_index()
+        jmean = jdf.groupby([scenario_col, "config"])[["jain", "gini"]].mean().reset_index()
 
-        scenarios = sorted(jmean["scenario"].unique())
+        scenarios = sorted(jmean[scenario_col].astype(str).unique())
         x = np.arange(len(scenarios))
         width = 0.8 / max(len(configs), 1)
 
@@ -230,8 +293,8 @@ def plot_fairness_analysis(df, out_dir, dpi=200, smooth=0, ci=False, **_):
         for i, cfg in enumerate(configs):
             offset = (i - len(configs) / 2 + 0.5) * width
             sub_c  = jmean[jmean["config"] == cfg]
-            j_vals = [sub_c[sub_c["scenario"] == sc]["jain"].values for sc in scenarios]
-            g_vals = [sub_c[sub_c["scenario"] == sc]["gini"].values for sc in scenarios]
+            j_vals = [sub_c[sub_c[scenario_col].astype(str) == str(sc)]["jain"].values for sc in scenarios]
+            g_vals = [sub_c[sub_c[scenario_col].astype(str) == str(sc)]["gini"].values for sc in scenarios]
             j_h = [v[0] if len(v) > 0 else 0 for v in j_vals]
             g_h = [v[0] if len(v) > 0 else 0 for v in g_vals]
             ax3a.bar(x + offset, j_h, width * 0.9, color=CONFIG_COLORS.get(cfg, "#888"), label=CONFIG_LABELS.get(cfg, cfg))
@@ -251,6 +314,33 @@ def plot_fairness_analysis(df, out_dir, dpi=200, smooth=0, ci=False, **_):
         plt.tight_layout()
         save_fig(fig3, out_dir / f"fairness_jain_gini_{ds}.png", dpi)
 
+        # ── 2d: Reward vs Quality scatter ─────────────────────────────────────
+        fig4, axes4 = plt.subplots(1, len(scenarios), figsize=(5 * len(scenarios), 4), squeeze=False)
+        fig4.suptitle(f"Reward vs Quality (Honest Clients) — {ds}", fontweight="bold")
+
+        for col_i, sc in enumerate(scenarios):
+            ax = axes4[0][col_i]
+            ax.set_title(str(sc))
+            ax.set_xlabel("Quality Score")
+            ax.set_ylabel("Reward (ETH)")
+            sc_honest = honest[honest[scenario_col].astype(str) == str(sc)]
+            for cfg in configs:
+                cfg_data = sc_honest[sc_honest["config"] == cfg]
+                if cfg_data.empty:
+                    continue
+                q = cfg_data["quality"].dropna()
+                r = cfg_data["reward_eth"].dropna()
+                # Align by index
+                common = q.index.intersection(r.index)
+                if len(common) > 0:
+                    ax.scatter(q[common], r[common], alpha=0.3, s=10,
+                               color=CONFIG_COLORS.get(cfg, "#888"),
+                               label=CONFIG_LABELS.get(cfg, cfg))
+            ax.legend(fontsize=7)
+
+        plt.tight_layout()
+        save_fig(fig4, out_dir / f"fairness_reward_vs_quality_{ds}.png", dpi)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. REPUTATION ANALYSIS
@@ -264,11 +354,13 @@ def plot_reputation_analysis(df, out_dir, dpi=200, smooth=0, **_):
     out_dir = Path(out_dir)
 
     for ds in _datasets(df):
-        sub     = df[df["dataset"] == ds]
-        configs = sorted(sub["config"].unique())
+        sub_all = df[df["dataset"] == ds]
+        sub     = _clean_view(sub_all)
+        scenario_col = _variant_col(sub)
+        configs = ordered_configs(sub["config"].unique())
 
-        for sc in _scenarios(sub):
-            sc_df = sub[sub["scenario"] == sc]
+        for sc in _scenario_variants(sub):
+            sc_df = sub[sub[scenario_col].astype(str) == str(sc)]
 
             # ── 3a: avg reputation per config ─────────────────────────────────
             fig, ax = plt.subplots(figsize=(7, 4))
@@ -285,12 +377,16 @@ def plot_reputation_analysis(df, out_dir, dpi=200, smooth=0, **_):
 
             ax.legend()
             plt.tight_layout()
-            save_fig(fig, out_dir / f"reputation_avg_{ds}_{sc}.png", dpi)
+            save_fig(fig, out_dir / f"reputation_avg_{ds}_{_safe_name(sc)}.png", dpi)
 
             # ── 3b: honest vs malicious ────────────────────────────────────────
-            if "client_type" not in sc_df.columns:
+            attack_sc_df = sub_all[
+                (sub_all[_variant_col(sub_all)].astype(str) == str(sc))
+                & (sub_all.get("has_attack", False) == True)
+            ]
+            if "client_type" not in attack_sc_df.columns:
                 continue
-            types = sc_df["client_type"].unique()
+            types = attack_sc_df["client_type"].unique()
             if len(types) < 2:
                 continue
 
@@ -300,7 +396,7 @@ def plot_reputation_analysis(df, out_dir, dpi=200, smooth=0, **_):
             ax2.set_ylabel("Reputation")
 
             for ctype in ["honest", "free_rider", "lazy"]:
-                type_df = sc_df[sc_df["client_type"] == ctype]
+                type_df = attack_sc_df[attack_sc_df["client_type"] == ctype]
                 if type_df.empty:
                     continue
                 by_r = type_df.groupby("round_num")["reputation"].mean().sort_index()
@@ -311,7 +407,7 @@ def plot_reputation_analysis(df, out_dir, dpi=200, smooth=0, **_):
 
             ax2.legend()
             plt.tight_layout()
-            save_fig(fig2, out_dir / f"reputation_honest_vs_malicious_{ds}_{sc}.png", dpi)
+            save_fig(fig2, out_dir / f"reputation_honest_vs_malicious_{ds}_{_safe_name(sc)}.png", dpi)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -338,15 +434,23 @@ def plot_attack_analysis(df, out_dir, dpi=200, smooth=0, **_):
             log.info("[%s] No attack runs detected — skipping.", ds)
             continue
 
-        configs = sorted(sub["config"].unique())
+        scenario_col = _variant_col(sub)
+        attack_pairs = (
+            attack_df[[scenario_col, "config"]]
+            .drop_duplicates()
+            .sort_values([scenario_col, "config"])
+            .to_dict("records")
+        )
 
         # ── 4a: accuracy comparison ────────────────────────────────────────────
-        fig, axes = plt.subplots(1, len(configs), figsize=(5 * len(configs), 4), squeeze=False)
+        fig, axes = plt.subplots(1, len(attack_pairs), figsize=(5 * len(attack_pairs), 4), squeeze=False)
         fig.suptitle(f"Accuracy: Clean vs Attack Runs — {ds}", fontweight="bold")
 
-        for col_i, cfg in enumerate(configs):
+        for col_i, pair in enumerate(attack_pairs):
+            sc = pair[scenario_col]
+            cfg = pair["config"]
             ax = axes[0][col_i]
-            ax.set_title(CONFIG_LABELS.get(cfg, cfg))
+            ax.set_title(f"{sc} / {CONFIG_LABELS.get(cfg, cfg)}")
             ax.set_xlabel("Round")
             ax.set_ylabel("Global Accuracy")
             ax.set_ylim(0, 1.05)
@@ -355,7 +459,10 @@ def plot_attack_analysis(df, out_dir, dpi=200, smooth=0, **_):
                 ("Clean",  clean_df,  "#4A90D9", "-"),
                 ("Attack", attack_df, "#E07070", "--"),
             ]:
-                c_df = src[src["config"] == cfg]
+                c_df = src[
+                    (src["config"] == cfg)
+                    & (src[scenario_col].astype(str) == str(sc))
+                ]
                 if c_df.empty:
                     continue
                 by_r = (
@@ -375,30 +482,36 @@ def plot_attack_analysis(df, out_dir, dpi=200, smooth=0, **_):
             continue
 
         reward_share = (
-            attack_df.groupby(["config", "client_type"])["reward_eth"]
+            attack_df.groupby([scenario_col, "config", "client_type"])["reward_eth"]
             .sum()
             .reset_index()
         )
 
-        fig2, axes2 = plt.subplots(1, len(configs), figsize=(4 * len(configs), 4), squeeze=False)
+        labels = [f"{p[scenario_col]}\n{p['config']}" for p in attack_pairs]
+        x = np.arange(len(attack_pairs))
+        bottom = np.zeros(len(attack_pairs), dtype=float)
+        fig2, ax2 = plt.subplots(figsize=(max(6, 1.8 * len(attack_pairs)), 4))
         fig2.suptitle(f"Reward Share by Client Type — {ds}", fontweight="bold")
 
-        for col_i, cfg in enumerate(configs):
-            ax = axes2[0][col_i]
-            ax.set_title(CONFIG_LABELS.get(cfg, cfg))
-            sub_rs = reward_share[reward_share["config"] == cfg]
-            if sub_rs.empty:
-                continue
-            total = sub_rs["reward_eth"].sum()
-            labels  = [t.replace("_", " ").title() for t in sub_rs["client_type"]]
-            sizes   = sub_rs["reward_eth"].values / (total + 1e-12)
-            colors  = [TYPE_COLORS.get(t, "#AAAAAA") for t in sub_rs["client_type"]]
-            wedges, texts, autotexts = ax.pie(
-                sizes, labels=labels, autopct="%1.1f%%",
-                colors=colors, startangle=90,
-            )
-            for at in autotexts:
-                at.set_fontsize(8)
+        for ctype in ["honest", "free_rider", "lazy"]:
+            shares = []
+            for pair in attack_pairs:
+                sub_rs = reward_share[
+                    (reward_share[scenario_col].astype(str) == str(pair[scenario_col]))
+                    & (reward_share["config"] == pair["config"])
+                ]
+                total = float(sub_rs["reward_eth"].sum())
+                val = float(sub_rs.loc[sub_rs["client_type"] == ctype, "reward_eth"].sum())
+                shares.append(val / total if total > 0 else 0.0)
+            ax2.bar(x, shares, bottom=bottom, color=TYPE_COLORS.get(ctype, "#AAAAAA"),
+                    label=ctype.replace("_", " ").title())
+            bottom += np.asarray(shares)
+
+        ax2.set_ylabel("Reward Share")
+        ax2.set_ylim(0, 1.05)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(labels)
+        ax2.legend()
 
         plt.tight_layout()
         save_fig(fig2, out_dir / f"attack_reward_share_{ds}.png", dpi)
@@ -417,8 +530,8 @@ def plot_alpha_sensitivity(df, out_dir, dpi=200, **_):
     out_dir = Path(out_dir)
 
     for ds in _datasets(df):
-        sub     = df[df["dataset"] == ds]
-        configs = sorted(sub["config"].unique())
+        sub     = _clean_view(df[df["dataset"] == ds])
+        configs = ordered_configs(sub["config"].unique())
         honest  = sub[sub["is_honest"]]
 
         # Per-(config, alpha) final accuracy — use last non-NaN round
@@ -436,10 +549,9 @@ def plot_alpha_sensitivity(df, out_dir, dpi=200, **_):
         fairness_rows = []
         for (cfg, alpha), grp in honest.groupby(["config", "alpha"]):
             r = grp["reward_eth"].dropna().values
-            q = grp["quality"].dropna().values
             fairness_rows.append({
                 "config": cfg, "alpha": alpha,
-                "jain": jain_fairness_index(r),
+                "jain": jain_index(r),
                 "reward_std": float(np.std(r)) if len(r) > 1 else np.nan,
             })
         fdf = pd.DataFrame(fairness_rows)
@@ -470,3 +582,83 @@ def plot_alpha_sensitivity(df, out_dir, dpi=200, **_):
 
         plt.tight_layout()
         save_fig(fig, out_dir / f"alpha_sensitivity_{ds}.png", dpi)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. CONVERGENCE COMPARISON
+# ══════════════════════════════════════════════════════════════════════════════
+
+def plot_convergence_comparison(df, out_dir, dpi=200, **_):
+    """
+    6a. Convergence round bar chart per config/scenario
+    6b. Final accuracy vs convergence round scatter
+    """
+    out_dir = Path(out_dir)
+
+    for ds in _datasets(df):
+        sub = _clean_view(df[df["dataset"] == ds])
+        scenario_col = _variant_col(sub)
+        scenarios = _scenario_variants(sub)
+        configs = ordered_configs(sub["config"].unique())
+
+        # Compute convergence per (scenario variant, config, alpha)
+        conv_records = []
+        for (sc, cfg, alpha), grp in sub.groupby([scenario_col, "config", "alpha"]):
+            acc = grp.groupby("round_num")["global_accuracy"].mean().sort_index().dropna()
+            if acc.empty:
+                continue
+            from fl.metrics import convergence_round as _cr
+            rounds_list = [int(r) for r in acc.index]
+            cr = _cr(acc.to_list(), rounds=rounds_list, peak_ratio=0.95, patience=5)
+            conv_records.append({
+                scenario_col: sc, "config": cfg, "alpha": alpha,
+                "convergence_round": cr if cr is not None else np.nan,
+                "final_accuracy": float(acc.iloc[-1]),
+            })
+
+        if not conv_records:
+            continue
+
+        cdf = pd.DataFrame(conv_records)
+        # Mean over alpha
+        cmean = cdf.groupby([scenario_col, "config"])[["convergence_round", "final_accuracy"]].mean().reset_index()
+
+        # ── 6a: convergence round bar chart ───────────────────────────────────
+        x = np.arange(len(scenarios))
+        width = 0.8 / max(len(configs), 1)
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.set_title(f"Convergence Round by Config — {ds}", fontweight="bold")
+        ax.set_ylabel("Convergence Round (95% peak, patience=5)")
+        ax.set_xticks(x)
+        ax.set_xticklabels(scenarios)
+
+        for i, cfg in enumerate(configs):
+            sub_c = cmean[cmean["config"] == cfg]
+            vals = [sub_c[sub_c[scenario_col].astype(str) == str(sc)]["convergence_round"].values for sc in scenarios]
+            heights = [v[0] if len(v) > 0 and not np.isnan(v[0]) else 0 for v in vals]
+            offset = (i - len(configs) / 2 + 0.5) * width
+            ax.bar(x + offset, heights, width * 0.9,
+                   color=CONFIG_COLORS.get(cfg, "#888"), label=CONFIG_LABELS.get(cfg, cfg))
+
+        ax.legend()
+        plt.tight_layout()
+        save_fig(fig, out_dir / f"convergence_round_{ds}.png", dpi)
+
+        # ── 6b: final accuracy vs convergence round scatter ───────────────────
+        fig2, ax2 = plt.subplots(figsize=(7, 5))
+        ax2.set_title(f"Accuracy vs Convergence Speed — {ds}", fontweight="bold")
+        ax2.set_xlabel("Convergence Round (lower = faster)")
+        ax2.set_ylabel("Final Accuracy")
+
+        for cfg in configs:
+            sub_c = cdf[cdf["config"] == cfg].dropna(subset=["convergence_round", "final_accuracy"])
+            if sub_c.empty:
+                continue
+            ax2.scatter(sub_c["convergence_round"], sub_c["final_accuracy"],
+                        alpha=0.6, s=30, color=CONFIG_COLORS.get(cfg, "#888"),
+                        label=CONFIG_LABELS.get(cfg, cfg))
+
+        ax2.legend()
+        plt.tight_layout()
+        save_fig(fig2, out_dir / f"convergence_scatter_{ds}.png", dpi)

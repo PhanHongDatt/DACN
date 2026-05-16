@@ -13,15 +13,22 @@ issues = []
 ok     = []
 
 # 1. Python version
-if sys.version_info < (3, 9) or sys.version_info >= (3, 12):
+# Note (schema v2): chúng ta dùng simulation_local thay vì Flower's ray-based
+# simulation → KHÔNG bắt buộc Python 3.11. 3.9+ là đủ; Python 3.11 vẫn là
+# khuyến nghị cho ổn định nhất.
+if sys.version_info < (3, 9):
     issues.append(
-        f"Python 3.11 is required for this project runtime, got {sys.version_info.major}.{sys.version_info.minor}. "
-        "Use a Python 3.11 virtual environment so Flower/Ray simulation dependencies install correctly."
+        f"Python ≥ 3.9 required, got {sys.version_info.major}.{sys.version_info.minor}."
+    )
+elif sys.version_info < (3, 11) or sys.version_info >= (3, 13):
+    ok.append(
+        f"Python {sys.version_info.major}.{sys.version_info.minor} "
+        f"(khuyến nghị: 3.11)"
     )
 else:
     ok.append(f"Python {sys.version_info.major}.{sys.version_info.minor}")
 
-# 2. Required packages
+# 2. Required packages (bỏ ray — simulation_local không cần)
 packages = {
     "flwr":        "flwr",
     "torch":       "torch",
@@ -31,7 +38,6 @@ packages = {
     "pandas":      "pandas",
     "scipy":       "scipy",
     "matplotlib":  "matplotlib",
-    "ray":         "ray",
 }
 for name, pkg in packages.items():
     try:
@@ -41,11 +47,12 @@ for name, pkg in packages.items():
     except ImportError:
         issues.append(f"Missing: {name}  (pip install {pkg})")
 
-# 3. Flower simulation API
+# 3. Flower API (chỉ cần strategy + types, không cần simulation)
 try:
     import flwr as fl
-    assert hasattr(fl.simulation, "start_simulation")
-    ok.append("Flower simulation API available")
+    from flwr.common import FitRes, EvaluateRes, Parameters  # noqa: F401
+    from flwr.server.client_proxy import ClientProxy  # noqa: F401
+    ok.append("Flower core API available (using simulation_local)")
 except Exception as e:
     issues.append(f"Flower API issue: {e}")
 
@@ -60,11 +67,13 @@ try:
 except Exception as e:
     issues.append(f"PyTorch issue: {e}")
 
-# 5. Internal modules
+# 5. Internal modules (schema v2 — new unified pipeline)
 internal = [
     "fl.config", "fl.normalization", "fl.metrics",
-    "fl.models", "fl.data_utils", "fl.client",
-    "fl.server", "fl.logger"
+    "fl.models", "fl.data_utils", "fl.logger",
+    # Schema v2 modules
+    "fl.reward_policies", "fl.aggregation_methods",
+    "fl.client_attacks", "fl.server_base", "fl.simulation_local",
 ]
 for mod in internal:
     try:

@@ -62,6 +62,76 @@ def partition_iid(labels: np.ndarray, n_clients: int, seed: int = 42) -> List[np
     return [arr for arr in np.array_split(indices, n_clients)]
 
 
+def apply_data_imbalance(
+    splits: List[np.ndarray],
+    pattern: str,
+    seed: int,
+    min_samples: int = 50,
+) -> List[np.ndarray]:
+    """
+    Tạo data size heterogeneity giữa các client bằng cách downsample.
+
+    Cần thiết cho K1/K2 vì partition mặc định cho ra sizes gần như đồng đều,
+    khiến reward policies như DataSize/CSRA không có data variance để differentiate.
+
+    Patterns:
+      "uniform"   — không thay đổi (giữ partition gốc)
+      "linear"    — weights = linspace(0.4, 1.6) of base, max/min ≈ 4×
+      "lognormal" — μ=0 σ=0.7, clipped [0.2, 3.0], max/min ≈ 10-15× (realistic)
+      "step"      — nửa client 0.5×, nửa 1.5× (max/min = 3×, hai nhóm rõ rệt)
+
+    Args:
+        splits: List of index arrays from partition function.
+        pattern: One of {"uniform", "linear", "lognormal", "step"}.
+        seed: For reproducible weight draw + sub-sampling.
+        min_samples: Floor for client size (tránh client quá nhỏ không train được).
+
+    Returns:
+        New splits với sizes đã apply imbalance. Mỗi client giữ ngẫu nhiên một
+        tập con index của partition ban đầu.
+
+    Raises:
+        ValueError nếu pattern không hợp lệ.
+    """
+    if pattern == "uniform" or len(splits) <= 1:
+        return splits
+
+    # Seed offset để weight draw không correlate với client_id partition
+    rng = np.random.default_rng(int(seed) + 1000)
+    n = len(splits)
+
+    if pattern == "linear":
+        weights = np.linspace(0.4, 1.6, n)
+    elif pattern == "lognormal":
+        weights = rng.lognormal(mean=0.0, sigma=0.7, size=n)
+        weights = np.clip(weights, 0.2, 3.0)
+    elif pattern == "step":
+        half = n // 2
+        weights = np.array([0.5] * half + [1.5] * (n - half), dtype=float)
+    else:
+        raise ValueError(
+            f"Unknown data_imbalance pattern '{pattern}'. "
+            f"Expected: uniform | linear | lognormal | step"
+        )
+
+    # Shuffle để client_id không correlate với size
+    rng.shuffle(weights)
+
+    # Normalize: max weight = 1.0 — chỉ downsample, không upsample (không có data thêm)
+    weights = weights / weights.max()
+
+    result: List[np.ndarray] = []
+    for i, split in enumerate(splits):
+        target_n = max(min_samples, int(len(split) * weights[i]))
+        if target_n >= len(split):
+            result.append(split)
+        else:
+            keep_idx = rng.choice(len(split), size=target_n, replace=False)
+            # Sort indices để reproducible CSV row order
+            result.append(np.sort(split[keep_idx]))
+    return result
+
+
 def partition_weak_noniid(labels: np.ndarray, n_clients: int,
                           classes_per_client: int = 5, seed: int = 42) -> List[np.ndarray]:
     """
@@ -191,16 +261,22 @@ def get_client_partitions(
     else:
         raise ValueError(f"Unknown scenario: {cfg.scenario}")
 
-    # Thêm label noise cho client chỉ định
+    # Thêm label noise cho client chỉ định (legacy, schema v2 dùng LabelNoiseClient)
     for ci in cfg.noise_clients:
         if ci < len(splits) and len(splits[ci]) > 0:
             splits[ci] = add_label_noise(splits[ci], labels, cfg.noise_ratio, n_cls, cfg.seed + ci)
 
-    # Lazy clients: chỉ dùng subset nhỏ
+    # Lazy clients: chỉ dùng subset nhỏ (legacy, schema v2 dùng LazyClient)
     for ci in cfg.lazy_client_ids:
         if ci < len(splits):
             n_keep = max(10, int(len(splits[ci]) * cfg.lazy_data_ratio))
             splits[ci] = splits[ci][:n_keep]
+
+    # Schema v2: Apply data imbalance để có variance cho DataSize/CSRA reward.
+    # Mặc định "lognormal" tạo max/min ≈ 10-15× realistic cho FL.
+    pattern = getattr(cfg, "data_imbalance", "uniform")
+    if pattern != "uniform":
+        splits = apply_data_imbalance(splits, pattern, cfg.seed)
 
     mean_data_size = float(np.mean([len(s) for s in splits]))
     return splits, labels, mean_data_size

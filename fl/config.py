@@ -48,6 +48,8 @@ class ExperimentConfig:
     free_rider_ids:    List[int] = field(default_factory=lambda: [7, 8])
     lazy_client_ids:   List[int] = field(default_factory=lambda: [9])
     lazy_data_ratio:   float = 0.1              # lazy dùng 10% data
+    # Schema v2: data size heterogeneity pattern
+    data_imbalance:    str   = "lognormal"      # uniform | linear | lognormal | step
     seed:              int   = 42
     results_dir:       str   = "./results"
     log_dir:           str   = "./results/logs"
