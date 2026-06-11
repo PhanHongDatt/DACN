@@ -18,12 +18,14 @@ from analysis.plots import (
     plot_fairness_analysis,
     plot_reputation_analysis,
     plot_attack_analysis,
-    plot_alpha_sensitivity,
+    plot_beta_sensitivity,
     plot_convergence_comparison,
 )
 from analysis.stats import (
     compute_summary_metrics,
+    compute_detection_confusion_metrics,
     compute_fairness_metrics,
+    paired_wilcoxon_tests,
     statistical_tests,
 )
 from analysis.report import generate_markdown_report, export_latex_tables
@@ -112,8 +114,10 @@ def main():
     log.info("Scenarios  : %s", sorted(df["scenario"].unique()))
     if "scenario_variant" in df.columns:
         log.info("Variants   : %s", sorted(df["scenario_variant"].unique()))
-    log.info("Configs    : %s", sorted(df["config"].unique()))
-    log.info("Alpha vals : %s", sorted(df["alpha"].unique()))
+    method_col = "method" if "method" in df.columns else "config"
+    log.info("Methods    : %s", sorted(df[method_col].unique()))
+    if "beta" in df.columns:
+        log.info("Beta vals  : %s", sorted(df["beta"].dropna().unique()))
     if "attack_label" in df.columns:
         attack_counts = df.groupby("attack_label")["run_id"].nunique().to_dict()
         log.info("Conditions : %s", attack_counts)
@@ -141,9 +145,9 @@ def main():
     log.info("--- [4/6] Attack Analysis ---")
     plot_attack_analysis(df, **plot_cfg)
 
-    # 6. Alpha sensitivity
-    log.info("--- [5/6] Alpha Sensitivity ---")
-    plot_alpha_sensitivity(df, **plot_cfg)
+    # 6. Beta sensitivity
+    log.info("--- [5/6] Beta Sensitivity ---")
+    plot_beta_sensitivity(df, **plot_cfg)
 
     # 7. Convergence comparison
     log.info("--- [6/6] Convergence Comparison ---")
@@ -155,6 +159,13 @@ def main():
     summary.to_csv(result_dir / "summary_metrics.csv", index=False)
     log.info("Saved: %s/summary_metrics.csv (%d rows)", result_dir, len(summary))
 
+    detection_confusion = compute_detection_confusion_metrics(df)
+    detection_confusion.to_csv(result_dir / "detection_confusion_metrics.csv", index=False)
+    log.info(
+        "Saved: %s/detection_confusion_metrics.csv (%d rows)",
+        result_dir, len(detection_confusion),
+    )
+
     fairness = compute_fairness_metrics(df)
     fairness.to_csv(result_dir / "fairness_metrics.csv", index=False)
     log.info("Saved: %s/fairness_metrics.csv (%d rows)", result_dir, len(fairness))
@@ -164,7 +175,10 @@ def main():
     stat_df = df
     if "attack_label" in df.columns and (df["attack_label"] == "clean").any():
         stat_df = df[df["attack_label"] == "clean"]
-    stat_results = statistical_tests(stat_df, metric_col="global_accuracy", group_col="config")
+    stat_results = statistical_tests(stat_df, metric_col="global_accuracy", group_col=method_col)
+    paired_stat_results = paired_wilcoxon_tests(
+        stat_df, metric_col="global_accuracy", group_col=method_col
+    )
     if not stat_results.empty:
         stat_results.to_csv(result_dir / "stat_tests.csv", index=False)
         log.info("Saved: %s/stat_tests.csv (%d pairs)", result_dir, len(stat_results))
@@ -179,6 +193,15 @@ def main():
             log.info("No statistically significant differences found.")
     else:
         log.info("Insufficient runs for statistical tests.")
+    if not paired_stat_results.empty:
+        paired_stat_results.to_csv(result_dir / "paired_stat_tests.csv", index=False)
+        log.info(
+            "Saved: %s/paired_stat_tests.csv (%d pairs)",
+            result_dir,
+            len(paired_stat_results),
+        )
+    else:
+        log.info("Insufficient paired runs for Wilcoxon tests.")
 
     # 10. LaTeX tables
     if args.latex:
@@ -191,7 +214,11 @@ def main():
         log.info("Generating Markdown report...")
         report_path = result_dir / "analysis_report.md"
         generate_markdown_report(df, summary, fairness, report_path, out_dir,
-                                 stat_tests=stat_results if not stat_results.empty else None)
+                                 stat_tests=stat_results if not stat_results.empty else None,
+                                 paired_stat_tests=(
+                                     paired_stat_results
+                                     if not paired_stat_results.empty else None
+                                 ))
         log.info("Saved: %s", report_path)
 
     log.info("Analysis complete. Outputs in: %s / %s", out_dir, result_dir)

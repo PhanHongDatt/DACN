@@ -11,6 +11,9 @@ class BlockchainConfig:
     chain_id:          int   = 31337
     pool_eth_per_round: float = 1.0   # ETH deposit mỗi vòng
     gas_limit:         int   = 500_000
+    # Fail-closed by default: if reputation cannot be read, the client is not
+    # treated as eligible for reward. Set True only for environment debugging.
+    reputation_fail_open: bool = False
     # Địa chỉ contract (tự động load từ contract_addresses.json sau deploy)
     store_address:     str   = ""
     dist_address:      str   = ""
@@ -25,6 +28,13 @@ class FLConfig:
     learning_rate:     float = 0.01
     server_port:       int   = 8080
     fraction_fit:      float = 1.0   # tỷ lệ client tham gia mỗi vòng
+
+@dataclass
+class FedLAWConfig:
+    alpha:             float = 0.1   # learning rate cho mô hình toàn cục (alpha)
+    beta:              float = 0.01  # learning rate cho trọng số (beta)
+    sparsity_s:        int   = 10    # số lượng client được giữ lại (s)
+    capping_t:         float = 0.2   # chặn trên của trọng số một client (t)
 
 @dataclass
 class ContributionConfig:
@@ -50,6 +60,7 @@ class ExperimentConfig:
     lazy_data_ratio:   float = 0.1              # lazy dùng 10% data
     # Schema v2: data size heterogeneity pattern
     data_imbalance:    str   = "lognormal"      # uniform | linear | lognormal | step
+    persistent_clients: bool = False             # reuse local client objects across rounds
     seed:              int   = 42
     results_dir:       str   = "./results"
     log_dir:           str   = "./results/logs"
@@ -58,5 +69,6 @@ class ExperimentConfig:
 class ProjectConfig:
     blockchain: BlockchainConfig   = field(default_factory=BlockchainConfig)
     fl:         FLConfig           = field(default_factory=FLConfig)
+    fedlaw:     FedLAWConfig       = field(default_factory=FedLAWConfig)
     contrib:    ContributionConfig = field(default_factory=ContributionConfig)
     experiment: ExperimentConfig   = field(default_factory=ExperimentConfig)

@@ -3,6 +3,8 @@ client_csra.py — Flower client implementation based on the CSRA framework.
 This client reports update-delta statistics and a bidding signal to support
 fair economic incentives and anomaly detection.
 """
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,6 +12,13 @@ from torch.utils.data import DataLoader
 import flwr as fl
 from fl.models import get_model, set_parameters, get_parameters
 from fl.config import FLConfig
+
+warnings.warn(
+    "fl.client_csra is legacy. Use fl.client_attacks.make_client for schema-v2 "
+    "experiments and attack modeling.",
+    RuntimeWarning,
+    stacklevel=2,
+)
 
 class FLClientCSRA(fl.client.NumPyClient):
     """

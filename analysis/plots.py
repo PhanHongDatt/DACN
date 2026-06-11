@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 apply_style()
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+_TRUE_STRINGS = {"1", "true", "t", "yes", "y"}
+_FALSE_STRINGS = {"0", "false", "f", "no", "n", ""}
 
 def _datasets(df):
     return sorted(df["dataset"].unique())
@@ -68,6 +70,74 @@ def _clean_view(df):
 
 def _plot_label_suffix(df):
     return " (clean runs)" if "attack_label" in df.columns and (df["attack_label"] == "attack").any() else ""
+
+
+def _nullable_bool_series(series: pd.Series) -> pd.Series:
+    """Parse bool-like values while preserving missing/unparseable cells."""
+    result = pd.Series(pd.NA, index=series.index, dtype="object")
+    numeric = pd.to_numeric(series, errors="coerce")
+    numeric_present = numeric.notna()
+    result.loc[numeric_present] = numeric.loc[numeric_present].astype(float) != 0.0
+    text = series.astype("string").str.strip().str.lower()
+    result.loc[text.isin(_TRUE_STRINGS)] = True
+    result.loc[text.isin(_FALSE_STRINGS)] = False
+    return result.astype("boolean")
+
+
+def _type_malicious_mask(df: pd.DataFrame) -> pd.Series:
+    if "client_type" not in df.columns:
+        return pd.Series(False, index=df.index, dtype=bool)
+    return df["client_type"].astype(str).isin([
+        "free_rider", "stealth_free_rider", "lazy", "label_noise",
+        "sign_flip", "malicious",
+    ])
+
+
+def _malicious_mask(df: pd.DataFrame) -> pd.Series:
+    """Return true attacker labels without using reward eligibility columns."""
+    type_fallback = _type_malicious_mask(df)
+    if "is_malicious" in df.columns:
+        is_malicious = _nullable_bool_series(df["is_malicious"])
+        fallback = is_malicious.fillna(type_fallback).astype(bool)
+    else:
+        fallback = type_fallback
+
+    if "ground_truth_honest" in df.columns:
+        truth = _nullable_bool_series(df["ground_truth_honest"])
+        truth_present = truth.notna()
+        truth_malicious = ~truth.fillna(True).astype(bool)
+        return fallback.where(~truth_present, truth_malicious)
+    return fallback
+
+
+def _participating_mask(df: pd.DataFrame) -> pd.Series:
+    """Exclude non-participating rows from per-client reward plots."""
+    if "detection_reason" not in df.columns:
+        return pd.Series(True, index=df.index, dtype=bool)
+    return df["detection_reason"].astype(str).ne("not_participating")
+
+
+def _honest_participants(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return true honest participating clients.
+
+    Schema v2 logs use `is_honest` as reward eligibility, so plots must not use
+    it as a ground-truth client type. False-positive quarantines should remain
+    visible in honest reward distributions.
+    """
+    return df.loc[(~_malicious_mask(df)) & _participating_mask(df)]
+
+
+def _ordered_client_types(types) -> list[str]:
+    """Return client types in a stable order while preserving unknown extras."""
+    preferred = [
+        "honest", "free_rider", "stealth_free_rider", "lazy",
+        "label_noise", "sign_flip",
+    ]
+    present = list(dict.fromkeys(str(t) for t in types))
+    known = [t for t in preferred if t in present]
+    extra = sorted(t for t in present if t not in preferred)
+    return known + extra
 
 
 def _safe_name(value):
@@ -225,7 +295,7 @@ def plot_fairness_analysis(df, out_dir, dpi=200, smooth=0, ci=False, **_):
         sub     = _clean_view(df[df["dataset"] == ds])
         scenario_col = _variant_col(sub)
         scenarios = _scenario_variants(sub)
-        honest  = sub[sub["is_honest"]]
+        honest  = _honest_participants(sub)
         configs = ordered_configs(sub["config"].unique())
 
         # ── 2a: boxplot ───────────────────────────────────────────────────────
@@ -395,7 +465,7 @@ def plot_reputation_analysis(df, out_dir, dpi=200, smooth=0, **_):
             ax2.set_xlabel("Round")
             ax2.set_ylabel("Reputation")
 
-            for ctype in ["honest", "free_rider", "lazy"]:
+            for ctype in _ordered_client_types(types):
                 type_df = attack_sc_df[attack_sc_df["client_type"] == ctype]
                 if type_df.empty:
                     continue
@@ -493,7 +563,11 @@ def plot_attack_analysis(df, out_dir, dpi=200, smooth=0, **_):
         fig2, ax2 = plt.subplots(figsize=(max(6, 1.8 * len(attack_pairs)), 4))
         fig2.suptitle(f"Reward Share by Client Type — {ds}", fontweight="bold")
 
-        for ctype in ["honest", "free_rider", "lazy"]:
+        type_order = [
+            "honest", "free_rider", "stealth_free_rider",
+            "lazy", "label_noise", "sign_flip",
+        ]
+        for ctype in type_order:
             shares = []
             for pair in attack_pairs:
                 sub_rs = reward_share[
@@ -518,46 +592,50 @@ def plot_attack_analysis(df, out_dir, dpi=200, smooth=0, **_):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. ALPHA SENSITIVITY ANALYSIS
+# 5. BETA SENSITIVITY ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def plot_alpha_sensitivity(df, out_dir, dpi=200, **_):
+def plot_beta_sensitivity(df, out_dir, dpi=200, **_):
     """
-    5a. Alpha vs final accuracy (line per config)
-    5b. Alpha vs Jain fairness index
-    5c. Alpha vs reward std (stability)
+    5a. Beta vs final accuracy (line per method)
+    5b. Beta vs Jain fairness index
+    5c. Beta vs reward std (stability)
+
+    Function name is kept for backward compatibility with analyze_results.py.
+    Schema v2 uses beta/gamma/delta, not alpha.
     """
     out_dir = Path(out_dir)
 
     for ds in _datasets(df):
         sub     = _clean_view(df[df["dataset"] == ds])
         configs = ordered_configs(sub["config"].unique())
-        honest  = sub[sub["is_honest"]]
+        honest  = _honest_participants(sub)
+        sweep_col = "beta" if "beta" in sub.columns else "alpha"
 
-        # Per-(config, alpha) final accuracy — use last non-NaN round
+        # Per-(config, beta) final accuracy — use last non-NaN round
         def _last_valid(g):
             s = g.groupby("round_num")["global_accuracy"].mean().sort_index().dropna()
             return float(s.iloc[-1]) if not s.empty else np.nan
 
         final_acc = (
-            sub.groupby(["config", "alpha"])
+            sub.groupby(["config", sweep_col])
             .apply(_last_valid)
             .reset_index(name="final_accuracy")
         )
 
-        # Per-(config, alpha) fairness & stability
+        # Per-(config, beta) fairness & stability
         fairness_rows = []
-        for (cfg, alpha), grp in honest.groupby(["config", "alpha"]):
+        for (cfg, beta), grp in honest.groupby(["config", sweep_col]):
             r = grp["reward_eth"].dropna().values
             fairness_rows.append({
-                "config": cfg, "alpha": alpha,
+                "config": cfg, sweep_col: beta,
                 "jain": jain_index(r),
                 "reward_std": float(np.std(r)) if len(r) > 1 else np.nan,
             })
         fdf = pd.DataFrame(fairness_rows)
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        fig.suptitle(f"Alpha Sensitivity — {ds}", fontweight="bold")
+        fig.suptitle(f"Beta Sensitivity — {ds}", fontweight="bold")
 
         metrics = [
             (axes[0], final_acc, "final_accuracy", "Final Accuracy", "Accuracy"),
@@ -567,21 +645,25 @@ def plot_alpha_sensitivity(df, out_dir, dpi=200, **_):
 
         for ax, src, col, title, ylabel in metrics:
             ax.set_title(title)
-            ax.set_xlabel("Alpha (α)")
+            ax.set_xlabel("Beta (β)")
             ax.set_ylabel(ylabel)
             for cfg in configs:
-                c_src = src[src["config"] == cfg].sort_values("alpha")
+                c_src = src[src["config"] == cfg].sort_values(sweep_col)
                 if c_src.empty or col not in c_src.columns:
                     continue
                 ax.plot(
-                    c_src["alpha"], c_src[col],
+                    c_src[sweep_col], c_src[col],
                     marker="o", color=CONFIG_COLORS.get(cfg, "#888"),
                     label=CONFIG_LABELS.get(cfg, cfg),
                 )
             ax.legend()
 
         plt.tight_layout()
-        save_fig(fig, out_dir / f"alpha_sensitivity_{ds}.png", dpi)
+        save_fig(fig, out_dir / f"beta_sensitivity_{ds}.png", dpi)
+
+
+# Backward-compatible name for callers that still import the old function.
+plot_alpha_sensitivity = plot_beta_sensitivity
 
 
 # ══════════════════════════════════════════════════════════════════════════════

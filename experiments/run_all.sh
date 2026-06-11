@@ -67,7 +67,7 @@ Modes:
                   Sanity check sau refactor. Không blockchain.
   --quick         6 cells × MNIST × {K1, K3@0.1} × seed 42 × 10 rounds.
                   ~12 runs. Bước trung gian trước full matrix.
-  --full          Full ablation matrix theo PLAN.md (~458 runs).
+  --full          Full ablation matrix theo PLAN.md (~514 runs).
                   3 datasets × 4 scenarios × 6 cells × 3 seeds (clean)
                   + attack matrix + β sweep.
 
@@ -230,7 +230,7 @@ parse_seeds() {
 #   $5 agg           : fedavg | trimmed | csra_dcd
 #   $6 reward        : equal | data | quality | csra
 #   $7 beta gamma delta (3 floats, set 0 nếu reward != csra)
-#   $8 attack        : clean | free_rider | lazy | label_noise | sign_flip
+#   $8 attack        : clean | free_rider | stealth_free_rider | lazy | label_noise | sign_flip
 #   $9 seed          : int
 run() {
   local desc="$1"
@@ -375,8 +375,8 @@ run_quick() {
 run_full() {
   # Per PLAN.md §5.3:
   # - Clean: 6 cells × 3 ds × {K1, K2, K3@0.1, K3@0.5} × 3 seeds = 216
-  # - Attack: 6 cells × {mnist, fashion} × {K2, K3@0.1} × 4 attacks × 2 seeds = 192
-  # - Attack CIFAR: 4 cells × cifar × K3@0.1 × 4 attacks × 2 seeds = 32
+  # - Attack: 6 cells × {mnist, fashion} × {K2, K3@0.1} × 5 attacks × 2 seeds = 240
+  # - Attack CIFAR: 4 cells × cifar × K3@0.1 × 5 attacks × 2 seeds = 40
   # - β sweep: 3 β × {mnist, fashion} × K3@0.1 × 3 seeds = 18
 
   local datasets=("mnist" "fashion_mnist")
@@ -384,7 +384,7 @@ run_full() {
     datasets+=("cifar10")
   fi
   local scenarios=("K1" "K2" "K3@0.5" "K3@0.1")
-  local attacks=("free_rider" "lazy" "label_noise" "sign_flip")
+  local attacks=("free_rider" "stealth_free_rider" "lazy" "label_noise" "sign_flip")
 
   # ── 1. Clean matrix ──────────────────────────────────────────────────────
   if [ "$INCLUDE_CLEAN" -eq 1 ]; then

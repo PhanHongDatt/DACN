@@ -7,6 +7,7 @@ import pytest
 from fl.aggregation_methods import (
     AGGREGATION_NAMES,
     apply_aggregation,
+    compute_update_features,
     csra_dcd_aggregation,
     detect_anomalies,
     fedavg_aggregation,
@@ -171,7 +172,7 @@ class TestCSRADCDAggregation:
         params = _make_client_params([1.0, 1.0, 1.0, 1.0, 100.0])
         anomaly_scores = [0.1, 0.1, 0.1, 0.1, 50.0]
 
-        agg, mask, z, method = csra_dcd_aggregation(
+        agg, mask, z, method, meta = csra_dcd_aggregation(
             params, weights=[1.0] * 5, anomaly_scores=anomaly_scores,
             mad_threshold=3.0,
         )
@@ -181,11 +182,14 @@ class TestCSRADCDAggregation:
         assert np.allclose(agg[0], 1.0)
         # method có thể là "mad" hoặc fallback tuỳ vào MAD value
         assert method in {"mad", "mean_abs_dev_fallback"}
+        assert meta["detection_reasons"][-1] == "norm_mad"
+        assert meta["reward_block_mask"] == [False, False, False, False, True]
+        assert meta["fallback_accept_all"] is False
 
     def test_no_filter_when_uniform(self):
         params = _make_client_params([1.0, 2.0, 3.0])
         scores = [1.0, 1.0, 1.0]  # đều nhau
-        agg, mask, z, method = csra_dcd_aggregation(
+        agg, mask, z, method, meta = csra_dcd_aggregation(
             params, weights=[1.0] * 3, anomaly_scores=scores,
         )
         assert mask == [False, False, False]
@@ -199,7 +203,7 @@ class TestCSRADCDAggregation:
         # Với threshold=1.0, 2 client bị flag. n_honest=3, min_honest=⌈0.8*5⌉=4. 3<4 → failsafe!
         params = _make_client_params([0.0, 0.0, 100.0, 100.0, 100.0])
         scores = [0.0, 0.0, 100.0, 100.0, 100.0]
-        agg, mask, z, method = csra_dcd_aggregation(
+        agg, mask, z, method, meta = csra_dcd_aggregation(
             params, weights=[1.0] * 5, anomaly_scores=scores,
             mad_threshold=1.0,
             min_honest_ratio=0.8,
@@ -207,6 +211,38 @@ class TestCSRADCDAggregation:
         # Failsafe kick in → tất cả mask = False
         assert mask == [False, False, False, False, False]
         assert "fallback_accept_all" in method
+        assert meta["detection_reasons"] == ["fallback_accept_all"] * 5
+        assert meta["reward_block_mask"] == [False] * 5
+        assert meta["pre_fallback_anomaly_mask"] == [True, True, False, False, False]
+        assert meta["fallback_triggered"] is True
+        assert meta["fallback_soft_filter"] is False
+
+    def test_failsafe_soft_filters_extreme_norm_outlier(self):
+        # min_honest_ratio=1.0 forces failsafe even when only one client is
+        # filtered. The outlier is still a high-confidence norm anomaly, so the
+        # soft hard-filter excludes it from aggregation/reward.
+        params = _make_client_params([1.0] * 9 + [100.0])
+        scores = [1.0] * 9 + [100.0]
+
+        agg, mask, z, method, meta = csra_dcd_aggregation(
+            params,
+            weights=[1.0] * 10,
+            anomaly_scores=scores,
+            mad_threshold=3.0,
+            min_honest_ratio=1.0,
+            fallback_hard_z=6.0,
+        )
+
+        assert "fallback_soft_filter" in method
+        assert mask == [False] * 9 + [True]
+        assert meta["fallback_triggered"] is True
+        assert meta["fallback_accept_all"] is False
+        assert meta["fallback_soft_filter"] is True
+        assert meta["fallback_hard_norm_mask"] == [False] * 9 + [True]
+        assert meta["reward_block_mask"] == [False] * 9 + [True]
+        assert meta["detection_reasons"][-1] == "norm_mad+fallback_hard_block"
+        assert z[-1] >= 6.0
+        assert np.allclose(agg[0], 1.0)
 
     def test_rejects_mismatched_scores(self):
         params = _make_client_params([1.0, 2.0])
@@ -214,6 +250,60 @@ class TestCSRADCDAggregation:
             csra_dcd_aggregation(
                 params, weights=[1.0, 1.0], anomaly_scores=[1.0],
             )
+
+    def test_direction_filter_catches_equal_norm_sign_flip(self):
+        # Base params = [0]. Two honest updates point +1, one sign-flip points -1.
+        # Norms are identical, so Norm-MAD alone cannot separate the attacker.
+        base = [np.array([0.0], dtype=np.float32)]
+        params = [
+            [np.array([1.0], dtype=np.float32)],
+            [np.array([1.0], dtype=np.float32)],
+            [np.array([-1.0], dtype=np.float32)],
+        ]
+        features = compute_update_features(params, base)
+        assert np.allclose(features["update_norms"], [1.0, 1.0, 1.0])
+        assert features["cosine_to_reference"] == [1.0, 1.0, -1.0]
+
+        agg, mask, z, method, meta = csra_dcd_aggregation(
+            params,
+            weights=[1.0, 1.0, 1.0],
+            anomaly_scores=features["update_norms"],
+            update_cosines=features["cosine_to_reference"],
+            mad_threshold=3.0,
+            cosine_threshold=-0.5,
+        )
+
+        assert mask == [False, False, True]
+        assert meta["direction_anomaly_mask"] == [False, False, True]
+        assert meta["reward_block_mask"] == [False, False, True]
+        assert meta["detection_reasons"][2] == "direction_cosine"
+        assert np.allclose(agg[0], 1.0)
+
+    def test_failsafe_still_reward_blocks_direction_anomaly(self):
+        base = [np.array([0.0], dtype=np.float32)]
+        params = [
+            [np.array([1.0], dtype=np.float32)],
+            [np.array([1.0], dtype=np.float32)],
+            [np.array([-1.0], dtype=np.float32)],
+        ]
+        features = compute_update_features(params, base)
+
+        agg, mask, z, method, meta = csra_dcd_aggregation(
+            params,
+            weights=[1.0, 1.0, 1.0],
+            anomaly_scores=features["update_norms"],
+            update_cosines=features["cosine_to_reference"],
+            mad_threshold=3.0,
+            cosine_threshold=-0.5,
+            min_honest_ratio=0.9,
+        )
+
+        assert mask == [False, False, False]
+        assert "fallback_accept_all" in method
+        assert meta["direction_anomaly_mask"] == [False, False, True]
+        assert meta["pre_fallback_anomaly_mask"] == [False, False, True]
+        assert meta["reward_block_mask"] == [False, False, True]
+        assert np.allclose(agg[0], 1.0 / 3.0)
 
 
 # ── Dispatcher ───────────────────────────────────────────────────────────────
@@ -224,6 +314,7 @@ class TestApplyAggregation:
         agg, meta = apply_aggregation("fedavg", params, weights=[1.0, 1.0])
         assert meta["anomaly_mask"] == [False, False]
         assert meta["robust_z"] is None
+        assert meta["reward_block_mask"] == [False, False]
 
     def test_trimmed_returns_no_anomaly(self):
         params = _make_client_params([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -260,6 +351,13 @@ class TestApplyAggregation:
             kwargs = {"weights": [1.0] * 5}
             if name == "csra_dcd":
                 kwargs["anomaly_scores"] = [0.5] * 5
+            if name == "fedlaw":
+                kwargs.update({
+                    "trial_params": params,
+                    "base_params": _make_client_params([0.0])[0],
+                    "w_k": np.ones(5) / 5,
+                    "local_losses": np.ones(5),
+                })
             agg, meta = apply_aggregation(name, params, **kwargs)
             assert agg is not None
             assert len(meta["anomaly_mask"]) == 5

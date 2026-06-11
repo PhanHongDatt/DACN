@@ -201,6 +201,29 @@ class FreeRiderClient(HonestClient):
         )
 
 
+class StealthFreeRiderClient(FreeRiderClient):
+    """
+    Stealth free-rider: không train nhưng giả metadata giống client hợp lệ.
+
+    Mục đích là stress-test threat model: nếu server chỉ tin data_size/quality
+    do client báo về thì attacker dạng này có thể nhận thưởng dù không đóng góp.
+    Server-side detection phải dựa trên update features và/hoặc server-known
+    data commitment để xử lý.
+    """
+
+    def __init__(self, *args, fake_quality: float = 0.2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fake_quality = float(fake_quality)
+        self.client_type = "stealth_free_rider"
+
+    def fit(self, parameters, config):
+        updated, num_examples, metrics = super().fit(parameters, config)
+        metrics["quality_score"] = max(0.0, self.fake_quality)
+        metrics["data_size"] = self.data_size
+        metrics["client_type"] = self.client_type
+        return updated, num_examples, metrics
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Attack 2: Lazy — train rất ít
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,11 +371,18 @@ class SignFlipClient(HonestClient):
 # Registry
 # ─────────────────────────────────────────────────────────────────────────────
 
-ATTACK_NAMES = ("free_rider", "lazy", "label_noise", "sign_flip")
+ATTACK_NAMES = (
+    "free_rider",
+    "stealth_free_rider",
+    "lazy",
+    "label_noise",
+    "sign_flip",
+)
 
 ATTACK_CLIENT_REGISTRY = {
     "honest": HonestClient,
     "free_rider": FreeRiderClient,
+    "stealth_free_rider": StealthFreeRiderClient,
     "lazy": LazyClient,
     "label_noise": LabelNoiseClient,
     "sign_flip": SignFlipClient,
@@ -369,11 +399,11 @@ def make_client(
     **extra_kwargs,
 ) -> HonestClient:
     """
-    Factory cho client. client_type ∈ {"honest", "free_rider", "lazy",
-    "label_noise", "sign_flip"}.
+    Factory cho client. client_type ∈ {"honest", "free_rider",
+    "stealth_free_rider", "lazy", "label_noise", "sign_flip"}.
 
     extra_kwargs sẽ được forward tới constructor của attack class tương ứng:
-      - FreeRider: noise_std, mode
+      - FreeRider/StealthFreeRider: noise_std, mode, fake_quality
       - Lazy: lazy_epochs
       - LabelNoise: flip_ratio, n_classes, rng_seed
       - SignFlip: scale

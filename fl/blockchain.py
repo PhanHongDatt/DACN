@@ -163,8 +163,15 @@ class BlockchainBridge:
             rep_scaled, is_honest = self.store.functions.getReputation(addr).call()
             return float(rep_scaled) / SCALE, bool(is_honest)
         except Exception as e:
-            logger.warning(f"getReputation failed for client {client_idx}: {e}")
-            return 0.0, True  # fail-open: không phạt client nếu lỗi đọc
+            fail_open = bool(getattr(self.cfg, "reputation_fail_open", False))
+            mode = "fail-open" if fail_open else "fail-closed"
+            logger.warning(
+                "getReputation failed for client %s: %s. Using %s fallback.",
+                client_idx,
+                e,
+                mode,
+            )
+            return 0.0, fail_open
 
     # ── Audit-only distribute (new refactor API) ──────────────
     def distribute_audit(

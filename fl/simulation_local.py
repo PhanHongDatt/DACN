@@ -6,6 +6,8 @@ Lý do tồn tại:
   - Pipeline experiment chạy sequential 10 clients × ~50 rounds, không cần
     parallelism của Ray.
   - Manual loop dễ debug và deterministic hơn — đảm bảo `--seed` reproducible.
+  - Mặc định tạo client mới mỗi fit/evaluate để giữ behavior cũ của Flower
+    simulation; có thể bật persistent_clients để test client có state dài hạn.
 
 API:
   >>> run_simulation_local(
@@ -95,6 +97,7 @@ def run_simulation_local(
     num_clients: int,
     n_rounds: int,
     initial_parameters: Parameters,
+    persistent_clients: bool = False,
 ) -> None:
     """
     Sequential simulation loop. Cho mỗi round:
@@ -106,31 +109,48 @@ def run_simulation_local(
 
     Args:
         strategy: instance của FLUnifiedStrategy (hoặc bất kỳ Flower strategy nào).
-        client_fn: factory `str -> NumPyClient`. Sẽ được gọi mỗi round để khởi tạo
-                   client (giống Flower simulation).
+        client_fn: factory `str -> NumPyClient`. Mặc định được gọi cho từng
+                   fit/evaluate (giống behavior cũ của local sim). Khi
+                   persistent_clients=True, mỗi cid chỉ được tạo một lần.
         num_clients: số lượng client.
         n_rounds: số rounds.
         initial_parameters: Parameters object khởi đầu (toàn cục).
+        persistent_clients: reuse client objects across rounds to support
+                   stateful/adaptive attackers in simulation studies.
     """
     parameters = initial_parameters
 
     # Pre-create proxies (chỉ dùng cid)
     proxies = {cid: _LocalClientProxy(str(cid)) for cid in range(num_clients)}
+    client_cache: Dict[int, fl.client.NumPyClient] = {}
+
+    def _client_for(cid: int) -> fl.client.NumPyClient:
+        if not persistent_clients:
+            return client_fn(str(cid))
+        if cid not in client_cache:
+            client_cache[cid] = client_fn(str(cid))
+        return client_cache[cid]
 
     log.info(
-        f"Starting local sequential simulation — clients={num_clients} rounds={n_rounds}"
+        "Starting local sequential simulation — clients=%s rounds=%s "
+        "persistent_clients=%s",
+        num_clients,
+        n_rounds,
+        persistent_clients,
     )
 
     for round_num in range(1, n_rounds + 1):
-        log.info(f"════════ Round {round_num}/{n_rounds} ════════")
+        log.info("======== Round %s/%s ========", round_num, n_rounds)
 
         # ── Fit phase ────────────────────────────────────────────────────
         params_ndarrays = parameters_to_ndarrays(parameters)
+        if hasattr(strategy, "set_current_global_parameters"):
+            strategy.set_current_global_parameters(params_ndarrays)
         fit_config = {"round": round_num}
 
         fit_results: list[tuple[ClientProxy, FitRes]] = []
         for cid in range(num_clients):
-            client = client_fn(str(cid))
+            client = _client_for(cid)
             try:
                 ret = client.fit(params_ndarrays, fit_config)
                 if isinstance(ret, tuple) and len(ret) == 3:
@@ -157,7 +177,7 @@ def run_simulation_local(
 
         eval_results: list[tuple[ClientProxy, EvaluateRes]] = []
         for cid in range(num_clients):
-            client = client_fn(str(cid))
+            client = _client_for(cid)
             try:
                 ret = client.evaluate(eval_params_ndarrays, eval_config)
                 if isinstance(ret, tuple) and len(ret) == 3:

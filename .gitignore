@@ -1,26 +1,47 @@
+# Python
 .venv/
 __pycache__/
 **/__pycache__/
 .pytest_cache/
-*.pyc
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Node & Hardhat
 node_modules/
 cache/
 artifacts/
+ignition/
+typechain-types/
+
+# Environment
 .env
+.env.*
+
+# Data & Results
 data/
 results/logs/**
 results/logs/*.csv
 results/logs/**/*.csv
 results/logs/**/*.log
 !results/logs/.gitkeep
+
 results/plots/**
 results/plots/*.png
 results/plots/**/*.png
+results/plots/**/*.pdf
 !results/plots/.gitkeep
+
+results/latex/*.tex
 results/*.csv
 results/*.md
-results/smoke/
-results/smoke6/
+results/smoke*/
 results/logs_legacy/
+results/check_before/
+
+# Runtime config
 fl/contract_addresses.json
 *.log
+.DS_Store

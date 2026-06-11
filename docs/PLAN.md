@@ -183,7 +183,7 @@ Ordering theo độ tin cậy của tín hiệu:
 | Datasets | MNIST, Fashion-MNIST, CIFAR-10 |
 | Scenarios clean | K1 (IID), K2 (Weak Non-IID), K3@α=0.1, K3@α=0.5 |
 | Scenarios attack | K2, K3@α=0.1 (2 điều kiện khó nhất) |
-| Attack types | free-rider, lazy, label-noise, sign-flip |
+| Attack types | free-rider, stealth-free-rider, lazy, label-noise, sign-flip |
 | Seeds (clean) | 3 (cố định: 42, 123, 2024) |
 | Seeds (attack) | 2 (cố định: 42, 123) |
 
@@ -192,10 +192,10 @@ Ordering theo độ tin cậy của tín hiệu:
 | Phần | Công thức tính | Runs |
 |---|---|---|
 | Clean matrix | 6 cells × 3 datasets × 4 scenarios × 3 seeds | **216** |
-| Attack matrix (MNIST + F-MNIST) | 6 cells × 2 datasets × 2 scenarios × 4 attacks × 2 seeds | **192** |
-| Attack matrix (CIFAR-10) | 4 cells (M1, M3, M5, M6) × 1 dataset × 1 scenario × 4 attacks × 2 seeds | **32** |
+| Attack matrix (MNIST + F-MNIST) | 6 cells × 2 datasets × 2 scenarios × 5 attacks × 2 seeds | **240** |
+| Attack matrix (CIFAR-10) | 4 cells (M1, M3, M5, M6) × 1 dataset × 1 scenario × 5 attacks × 2 seeds | **40** |
 | β sweep (CSRAReward only) | 3 β × 2 datasets × 1 scenario × 3 seeds | **18** |
-| **TỔNG** | | **458 runs** |
+| **TỔNG** | | **514 runs** |
 
 ### 5.5. Ước lượng thời gian compute
 
@@ -375,10 +375,15 @@ python experiments/run_experiment.py \
 ```
 
 Flags chính:
-- `--aggregation`: `fedavg | trimmed_mean | csra_dcd`
-- `--reward-policy`: `equal | data_size | quality | csra`
-- `--attack`: `none | free_rider | lazy | label_noise | sign_flip`
+- `--aggregation`: `fedavg | trimmed | csra_dcd`
+- `--reward-policy`: `equal | data | quality | csra`
+- `--attack`: `clean | free_rider | stealth_free_rider | lazy | label_noise | sign_flip`
 - `--beta`, `--gamma`, `--delta`: chỉ áp dụng với `--reward-policy csra`
+- `--persistent-clients`: reuse local client object qua nhiều round để test client có state/adaptive attacker
+- `--mad-threshold`, `--cosine-threshold`, `--direction-min-norm-z`, `--min-honest-ratio`
+- `--suspicion-decay`, `--suspicion-threshold`, `--low-quality-z-threshold`
+- `--authenticity-suspicion`, `--low-authenticity-threshold`
+- `--high-update-norm-z-threshold`, `--inefficient-update-suspicion`
 - `--seed`: bắt buộc (không random ngầm)
 
 ### 7.5. Server base class
@@ -437,21 +442,40 @@ Quy ước viết tắt:
 | **`aggregation_method`** | str | **MỚI** — fedavg / trimmed / csra_dcd |
 | **`reward_policy`** | str | **MỚI** — equal / data / quality / csra |
 | **`beta`, `gamma`, `delta`** | float | **MỚI** — chỉ có giá trị với CSRAReward |
-| **`attack_type`** | str | **MỚI** — none / free_rider / lazy / label_noise / sign_flip |
+| **`attack_type`** | str | **MỚI** — clean / free_rider / stealth_free_rider / lazy / label_noise / sign_flip |
 | **`seed`** | int | **MỚI** — seed cố định |
+| **`persistent_clients`** | bool | **MỚI** — simulator reuse client object qua round |
 | `round_num` | int | |
 | `client_id` | int | |
-| `client_type` | str | honest / free_rider / lazy / label_noise / malicious |
-| `is_honest` | bool | |
-| `data_size` | int | |
-| `quality_score` | float | |
+| `client_type` | str | honest / free_rider / stealth_free_rider / lazy / label_noise / sign_flip |
+| `ground_truth_honest` | bool | nhãn kịch bản: client thật sự honest hay attacker |
+| `reward_eligible` | bool | client đủ điều kiện nhận reward sau filtering/quarantine/reputation |
+| `is_honest` | bool | legacy alias của `reward_eligible`, không dùng làm ground truth |
+| `data_size` | int | effective data size server dùng cho reward/log |
+| `reported_data_size` | int | data size client báo về |
+| `server_known_data_size` | int | partition size server biết trong simulation |
+| `quality_score` | float | local client metric; reward quality hiện dùng server-side alignment |
 | `reputation` | float | |
 | `w_new` | float | weight tổng dùng cho aggregation |
 | `reward_eth` | float | |
+| `reward_blocked` | bool | client bị chặn reward/quarantine |
 | `is_anomaly` | bool | bị flag bởi CSRA-DCD filter |
 | `anomaly_score` | float | `‖Δᵢ‖₂` |
+| `raw_update_norm` | float | update norm server tính từ params |
+| `raw_update_norm_z` | float | upper-tail robust z-score của raw update norm |
+| `normalized_update_score` | float | update norm chuẩn hóa theo server-known data size |
+| `cosine_to_reference` | float | direction/alignment score server-side |
+| `authenticity_score` | float | update STD dùng cho low-authenticity detector |
+| `authenticity_anomaly` | bool | low-authenticity flag |
+| `inefficient_update` | bool | reward-quarantine signal: raw norm cực lớn nhưng quality không vượt median |
+| `data_size_mismatch` | bool | client-reported size khác server-known size |
 | `robust_z` | float | MAD-based z-score |
 | `detection_reason` | str | "accepted" / "filtered_anomaly" |
+| `suspicion_score` | float | rolling suspicion state |
+| `suspicion_quarantine` | bool | reward quarantine vì suspicion |
+| `reward_component_quality` | float | normalized quality/alignment component dùng bởi `quality`; weighted quality component với `csra`; `0` nếu policy không dùng |
+| `reward_component_data` | float | normalized data component dùng bởi `data`; weighted data component với `csra`; `0` nếu policy không dùng |
+| `reward_component_reputation` | float | weighted reputation component với `csra`; `0` nếu policy không dùng |
 | `global_accuracy` | float | accuracy round đó |
 | `run_rounds_observed` | int | tổng số rounds của run này |
 
@@ -470,7 +494,7 @@ Quy ước viết tắt:
 | **W1** | Refactor core module | `reward_policies.py` + `aggregation_methods.py` + `server_base.py` + smoke test 6 cells | 2-3 |
 | **W2** | Refactor logger + loader + tests | New schema + unit tests PASS | 1-2 |
 | **W3** | Implement attacks + blockchain audit-only | 4 attack clients hoạt động + blockchain ghi log đầy đủ | 1 |
-| **W4** | Chạy full matrix | 458 CSV files trong `results/logs/` | 7-10 |
+| **W4** | Chạy full matrix | 514 CSV files trong `results/logs/` | 7-10 |
 | **W5** | Analysis pipeline + báo cáo | `analysis_report.md` + plots cho luận văn | 2-3 |
 
 **Tổng:** ~14-19 ngày làm việc.
@@ -512,10 +536,10 @@ Quy ước viết tắt:
 Thứ tự ưu tiên (chạy MNIST/F-MNIST trước, CIFAR sau):
 
 1. **Clean MNIST + F-MNIST** (144 runs, ~12 giờ): 6 cells × 2 ds × 4 sc × 3 seeds
-2. **Attack MNIST + F-MNIST** (192 runs, ~16 giờ): 6 cells × 2 ds × 2 sc × 4 attacks × 2 seeds
+2. **Attack MNIST + F-MNIST** (240 runs, ~20 giờ): 6 cells × 2 ds × 2 sc × 5 attacks × 2 seeds
 3. **β sweep** (18 runs, ~1.5 giờ): 3 β × 2 ds × K3@0.1 × 3 seeds
 4. **Clean CIFAR-10** (72 runs, ~36-54 giờ): 6 cells × 1 ds × 4 sc × 3 seeds
-5. **Attack CIFAR-10** (32 runs, ~16-24 giờ): 4 cells × 1 ds × 1 sc × 4 attacks × 2 seeds
+5. **Attack CIFAR-10** (40 runs, ~20-30 giờ): 4 cells × 1 ds × 1 sc × 5 attacks × 2 seeds
 
 Mỗi batch kết thúc bằng smoke `analyze_results.py` để bắt regression sớm.
 

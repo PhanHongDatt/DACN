@@ -19,8 +19,10 @@ Reference: docs/PLAN.md §7.4.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import os
+import random
 import sys
 import traceback
 
@@ -35,7 +37,7 @@ from flwr.common import ndarrays_to_parameters
 from fl.aggregation_methods import AGGREGATION_NAMES
 from fl.blockchain import BlockchainBridge
 from fl.client_attacks import ATTACK_NAMES, make_client
-from fl.config import ExperimentConfig, FLConfig, ProjectConfig
+from fl.config import ExperimentConfig, FLConfig, FedLAWConfig, ProjectConfig
 from fl.data_utils import (
     apply_labels,
     get_client_partitions,
@@ -50,7 +52,7 @@ from fl.simulation_local import run_simulation_local
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
@@ -92,8 +94,48 @@ def parse_args() -> argparse.Namespace:
                    help="TrimmedMean trim ratio (trimmed only)")
     p.add_argument("--mad-threshold", type=float, default=3.0,
                    help="MAD z threshold (csra_dcd only)")
+    p.add_argument("--cosine-threshold", type=float, default=-0.8,
+                   help="Cosine threshold for direction anomaly (csra_dcd only)")
+    p.add_argument("--direction-min-norm-z", type=float, default=0.0,
+                   help="Minimum norm robust-z required for direction anomaly")
     p.add_argument("--min-honest-ratio", type=float, default=0.5,
                    help="Min honest ratio failsafe (csra_dcd only)")
+    p.add_argument("--fallback-hard-z", type=float, default=6.0,
+                   help="During CSRA-DCD failsafe, still filter/reward-block "
+                        "norm outliers with robust-z >= this value. Set <=0 "
+                        "to disable the soft hard-filter.")
+    p.add_argument("--suspicion-decay", type=float, default=0.6,
+                   help="Rolling suspicion decay for reward quarantine")
+    p.add_argument("--suspicion-threshold", type=float, default=1.0,
+                   help="Rolling suspicion score required to quarantine reward")
+    p.add_argument("--low-quality-z-threshold", type=float, default=2.0,
+                   help="Lower-tail robust-z threshold for low-quality suspicion")
+    p.add_argument("--low-quality-suspicion", type=float, default=0.5,
+                   help="Suspicion increment for one low-quality outlier round")
+    p.add_argument("--zero-data-suspicion", type=float, default=1.0,
+                   help="Suspicion increment when a participant reports data_size=0")
+    p.add_argument("--anomaly-suspicion", type=float, default=0.8,
+                   help="Suspicion increment for update anomaly/direction anomaly")
+    p.add_argument("--authenticity-suspicion", type=float, default=1.0,
+                   help="Suspicion increment for low authenticity (Free-rider)")
+    p.add_argument("--low-authenticity-threshold", type=float, default=1.5,
+                   help="MAD robust-z threshold for authenticity (STD) anomaly")
+    p.add_argument("--high-update-norm-z-threshold", type=float, default=4.0,
+                   help="Raw update-norm robust-z threshold for inefficient "
+                        "update reward quarantine. Set <=0 to disable.")
+    p.add_argument("--inefficient-update-suspicion", type=float, default=1.0,
+                   help="Suspicion increment for extreme raw update norm with "
+                        "non-superior local quality")
+
+    # FedLAW params
+    p.add_argument("--alpha-law", type=float, default=0.1,
+                   help="FedLAW model learning rate (alpha)")
+    p.add_argument("--beta-law", type=float, default=0.01,
+                   help="FedLAW weight learning rate (beta)")
+    p.add_argument("--sparsity-s", type=int, default=10,
+                   help="FedLAW sparsity constraint (s)")
+    p.add_argument("--capping-t", type=float, default=0.2,
+                   help="FedLAW weight capping (t)")
 
     # Attack
     p.add_argument("--attack", default="clean",
@@ -112,6 +154,10 @@ def parse_args() -> argparse.Namespace:
                    choices=["uniform", "linear", "lognormal", "step"],
                    help="Pattern phân phối size client (cần thiết cho M2/M4 có "
                         "variance trên K1/K2)")
+    p.add_argument("--persistent-clients", action="store_true",
+                   help="Reuse the same local client objects across rounds. "
+                        "Default off preserves the existing Flower-like factory "
+                        "behavior; enable to test stateful/adaptive clients.")
 
     # Misc
     p.add_argument("--seed", type=int, required=True,
@@ -156,6 +202,20 @@ def build_client_types(
     return types
 
 
+def derive_attack_seed(seed: int, client_id: int) -> int:
+    """Derive a stable per-client attack RNG seed from the experiment seed."""
+    payload = f"{int(seed)}:{int(client_id)}".encode("ascii")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "little") % (2**32)
+
+
+def build_attack_kwargs(client_type: str, seed: int, client_id: int) -> dict:
+    """Return attack constructor kwargs that must follow experiment seed."""
+    if client_type == "label_noise":
+        return {"rng_seed": derive_attack_seed(seed, client_id)}
+    return {}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,8 +229,41 @@ def main() -> None:
         if abs(weight_sum - 1.0) > 1e-6:
             raise ValueError(
                 f"beta + gamma + delta must equal 1.0, got {weight_sum:.6f} "
-                f"(β={args.beta} γ={args.gamma} δ={args.delta})"
+                f"(beta={args.beta} gamma={args.gamma} delta={args.delta})"
             )
+    if args.aggregation == "csra_dcd":
+        if args.mad_threshold <= 0:
+            raise ValueError("--mad-threshold must be > 0 for csra_dcd")
+        if not (0.0 < args.min_honest_ratio <= 1.0):
+            raise ValueError("--min-honest-ratio must be in (0, 1]")
+        if args.direction_min_norm_z < 0:
+            raise ValueError("--direction-min-norm-z must be >= 0")
+    if not (0.0 <= args.suspicion_decay <= 1.0):
+        raise ValueError("--suspicion-decay must be in [0, 1]")
+    if args.suspicion_threshold < 0:
+        raise ValueError("--suspicion-threshold must be >= 0")
+    if args.low_quality_z_threshold < 0:
+        raise ValueError("--low-quality-z-threshold must be >= 0")
+    if args.low_quality_suspicion < 0:
+        raise ValueError("--low-quality-suspicion must be >= 0")
+    if args.zero_data_suspicion < 0:
+        raise ValueError("--zero-data-suspicion must be >= 0")
+    if args.anomaly_suspicion < 0:
+        raise ValueError("--anomaly-suspicion must be >= 0")
+    if args.authenticity_suspicion < 0:
+        raise ValueError("--authenticity-suspicion must be >= 0")
+    if args.low_authenticity_threshold < 0:
+        raise ValueError("--low-authenticity-threshold must be >= 0")
+    if args.inefficient_update_suspicion < 0:
+        raise ValueError("--inefficient-update-suspicion must be >= 0")
+    if args.scenario == "K3":
+        dirichlet_alpha = (
+            args.dirichlet_alpha
+            if args.dirichlet_alpha is not None
+            else ExperimentConfig().dirichlet_beta
+        )
+        if dirichlet_alpha <= 0:
+            raise ValueError("--dirichlet-alpha must be > 0 for K3")
 
     # ── Thread limit (cho chạy parallel nhiều cells) ─────────────────────
     if args.num_threads > 0:
@@ -182,6 +275,7 @@ def main() -> None:
         logger.info(f"Thread limit set to {args.num_threads}")
 
     # ── Seed ─────────────────────────────────────────────────────────────
+    random.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
@@ -199,6 +293,7 @@ def main() -> None:
         lazy_client_ids=[],
         # Schema v2: data size heterogeneity (cần cho M2/M4)
         data_imbalance=args.data_imbalance,
+        persistent_clients=args.persistent_clients,
     )
     if args.dirichlet_alpha is not None:
         exp_cfg.dirichlet_beta = args.dirichlet_alpha
@@ -209,7 +304,13 @@ def main() -> None:
         batch_size=args.batch_size,
         local_epochs=args.local_epochs,
     )
-    cfg = ProjectConfig(fl=fl_cfg, experiment=exp_cfg)
+    fedlaw_cfg = FedLAWConfig(
+        alpha=args.alpha_law,
+        beta=args.beta_law,
+        sparsity_s=args.sparsity_s,
+        capping_t=args.capping_t,
+    )
+    cfg = ProjectConfig(fl=fl_cfg, experiment=exp_cfg, fedlaw=fedlaw_cfg)
 
     os.makedirs(args.log_dir, exist_ok=True)
 
@@ -230,6 +331,7 @@ def main() -> None:
     test_dataset = load_dataset(args.dataset, train=False)
 
     sizes = [len(s) for s in splits]
+    server_data_sizes = {cid: int(size) for cid, size in enumerate(sizes)}
     logger.info(
         f"Client data sizes — min={min(sizes)} max={max(sizes)} "
         f"mean={mean_ds:.0f}"
@@ -271,13 +373,13 @@ def main() -> None:
     )
     exp_logger = ExperimentLogger(run_id, args.log_dir)
     fh = logging.FileHandler(f"{args.log_dir}/{run_id}.log", encoding="utf-8")
-    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s"))
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
     logging.getLogger().addHandler(fh)
 
     logger.info(f"Run ID: {run_id}")
     logger.info(
         f"agg={args.aggregation} reward={args.reward_policy} "
-        f"β={args.beta:.2f} γ={args.gamma:.2f} δ={args.delta:.2f} "
+        f"beta={args.beta:.2f} gamma={args.gamma:.2f} delta={args.delta:.2f} "
         f"attack={args.attack} seed={args.seed}"
     )
 
@@ -300,11 +402,12 @@ def main() -> None:
             train_loader=train_loader,
             test_loader=test_loader_shared,
             fl_cfg=fl_cfg,
+            **build_attack_kwargs(ctype, args.seed, idx),
         )
 
     init_params = ndarrays_to_parameters(get_parameters(get_model(args.dataset)))
 
-    # Khi reward != csra, β γ δ không có ý nghĩa — set về 0 để CSV và filename
+    # Khi reward != csra, beta/gamma/delta không có ý nghĩa — set về 0 để CSV và filename
     # consistent (chỉ run với reward=csra mới có giá trị thực).
     eff_beta = args.beta if args.reward_policy == "csra" else 0.0
     eff_gamma = args.gamma if args.reward_policy == "csra" else 0.0
@@ -317,12 +420,31 @@ def main() -> None:
         exp_logger=exp_logger,
         client_types=client_types,
         mean_data_size=mean_ds,
+        server_data_sizes=server_data_sizes,
         seed=args.seed,
         attack_type=args.attack,
         # Aggregation params
         trim_ratio=args.trim_ratio,
         mad_threshold=args.mad_threshold,
+        cosine_threshold=args.cosine_threshold,
+        direction_min_norm_z=args.direction_min_norm_z,
         min_honest_ratio=args.min_honest_ratio,
+        fallback_hard_z=args.fallback_hard_z,
+        suspicion_decay=args.suspicion_decay,
+        suspicion_threshold=args.suspicion_threshold,
+        low_quality_z_threshold=args.low_quality_z_threshold,
+        low_quality_suspicion=args.low_quality_suspicion,
+        zero_data_suspicion=args.zero_data_suspicion,
+        anomaly_suspicion=args.anomaly_suspicion,
+        authenticity_suspicion=args.authenticity_suspicion,
+        low_authenticity_threshold=args.low_authenticity_threshold,
+        high_update_norm_z_threshold=args.high_update_norm_z_threshold,
+        inefficient_update_suspicion=args.inefficient_update_suspicion,
+        # FedLAW params
+        alpha_law=args.alpha_law,
+        beta_law=args.beta_law,
+        sparsity_s=args.sparsity_s,
+        capping_t=args.capping_t,
         # Reward params
         beta=eff_beta,
         gamma=eff_gamma,
@@ -345,6 +467,7 @@ def main() -> None:
             num_clients=args.n_clients,
             n_rounds=args.n_rounds,
             initial_parameters=init_params,
+            persistent_clients=args.persistent_clients,
         )
         logger.info(f"Simulation complete. CSV: {exp_logger.filepath}")
 

@@ -2,6 +2,8 @@
 client.py — Flower client với 3 loại hành vi: honest, free_rider, lazy.
 Tính quality_score = Δloss (mức độ cải thiện loss sau local training).
 """
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,6 +11,13 @@ from torch.utils.data import DataLoader
 import flwr as fl
 from fl.models import get_model, set_parameters, get_parameters
 from fl.config import FLConfig
+
+warnings.warn(
+    "fl.client is legacy. Use fl.client_attacks.make_client for schema-v2 "
+    "experiments and attack modeling.",
+    RuntimeWarning,
+    stacklevel=2,
+)
 
 
 class FLClient(fl.client.NumPyClient):

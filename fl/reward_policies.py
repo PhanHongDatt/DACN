@@ -112,7 +112,7 @@ def data_size_reward(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Policy 3: QualityOnly — bias theo chất lượng (nhạy noise)
+# Policy 3: AlignmentOnly (Thay thế QualityOnly) — bias theo sự đồng thuận gradient
 # ─────────────────────────────────────────────────────────────────────────────
 
 def quality_reward(
@@ -121,12 +121,14 @@ def quality_reward(
     total_reward: float,
 ) -> Dict[int, float]:
     """
-    r_i = R · q_i / Σ q_j. Hoàn toàn dựa quality, nhạy với noise 1-round.
-    Vai trò: thể hiện hạn chế của reward dựa trên định tính đơn thuần.
+    (Lưu ý: tham số vẫn tên là quality_scores để tương thích với các module gọi hàm,
+     nhưng nội dung thực tế là Alignment Score).
+    r_i = R · a_i / Σ a_j. Dựa trên Gradient Alignment (Cosine Similarity hoặc Tích vô hướng).
+    Thay thế cho Local Loss (dễ bị trick và bias IID).
 
     Args:
         client_ids: ID client hợp lệ
-        quality_scores: quality (Δloss) tương ứng, cần ≥ 0
+        quality_scores: alignment tương ứng (được tính tại Server), cần ≥ 0
         total_reward: tổng pool
 
     Returns:
@@ -134,27 +136,28 @@ def quality_reward(
     """
     ids = _validate_ids(client_ids)
     R = _validate_total(total_reward)
-    quality = np.asarray(quality_scores, dtype=float)
+    alignment = np.asarray(quality_scores, dtype=float)
 
-    if len(quality) != len(ids):
+    if len(alignment) != len(ids):
         raise ValueError(
-            f"quality_scores length {len(quality)} != client_ids length {len(ids)}"
+            f"quality_scores length {len(alignment)} != client_ids length {len(ids)}"
         )
 
     if len(ids) == 0:
         return {}
 
-    # Clip âm về 0 (quality = Δloss có thể âm khi loss tăng)
-    quality = np.clip(quality, 0.0, None)
-    total_q = float(quality.sum())
+    # Clip âm về 0 (các client đi ngược hướng với mô hình chung sẽ không nhận reward)
+    alignment = np.clip(alignment, 0.0, None)
+    total_a = float(alignment.sum())
 
-    if total_q < _EPS:
-        # Mọi client có quality ~ 0 → fallback EqualSplit
-        log.warning("quality_reward: all quality_scores ~ 0, fallback to equal_split")
+    if total_a < _EPS:
+        # Mọi client có alignment ~ 0 → fallback EqualSplit
+        log.warning("quality_reward: all alignment_scores ~ 0, fallback to equal_split")
         return equal_split(ids, R)
 
-    weights = quality / total_q
+    weights = alignment / total_a
     return {cid: float(R * w) for cid, w in zip(ids, weights)}
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,12 +183,12 @@ def csra_reward(
         r_i = R · W_i / Σ W_j
 
     với:
-        - q̃_i, d̃_i, ρ̃_i là quality / data size / reputation đã hybrid-normalize
+        - q̃_i, d̃_i, ρ̃_i là quality (Gradient Alignment) / data size / reputation đã hybrid-normalize
         - β + γ + δ = 1, mỗi tham số ∈ [0, 1]
 
     Args:
         client_ids: ID client hợp lệ
-        quality_scores: Δloss của round, cần ≥ 0
+        quality_scores: Alignment score (cosine) của round, thay thế cho local loss, cần ≥ 0
         data_sizes: số sample local của round
         reputations: reputation tích lũy từ blockchain, ∈ [0, 1]
         total_reward: tổng pool (ETH)

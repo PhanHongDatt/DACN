@@ -3,6 +3,7 @@ server_trimmed.py — TrimmedMean baseline strategy for robust FL aggregation.
 This baseline intentionally does not use blockchain rewards.
 """
 import logging
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import flwr as fl
@@ -22,6 +23,12 @@ from fl.config import ProjectConfig
 from fl.logger import ExperimentLogger
 
 logger = logging.getLogger(__name__)
+warnings.warn(
+    "fl.server_trimmed is legacy. Use fl.server_base.FLUnifiedStrategy with "
+    "aggregation_method='trimmed' for schema-v2 experiments.",
+    RuntimeWarning,
+    stacklevel=2,
+)
 
 
 class TrimmedMeanStrategy(fl.server.strategy.FedAvg):

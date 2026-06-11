@@ -1,0 +1,12 @@
+\begin{table}[htbp]
+\centering
+\caption{Schema v2 summary metrics by FL method}
+\label{tab:summary_schema_v2}
+\begin{tabular}{llllllllllllllllllllllllllllllllllllllllllll}
+\toprule
+\textbf{dataset} & \textbf{scenario_variant} & \textbf{method} & \textbf{method_label} & \textbf{attack_type} & \textbf{attack_label} & \textbf{beta} & \textbf{gamma} & \textbf{delta} & \textbf{mad_threshold} & \textbf{cosine_threshold} & \textbf{direction_min_norm_z} & \textbf{min_honest_ratio} & \textbf{fallback_hard_z} & \textbf{suspicion_decay} & \textbf{suspicion_threshold} & \textbf{low_quality_z_threshold} & \textbf{low_quality_suspicion} & \textbf{zero_data_suspicion} & \textbf{anomaly_suspicion} & \textbf{authenticity_suspicion} & \textbf{low_authenticity_threshold} & \textbf{high_update_norm_z_threshold} & \textbf{inefficient_update_suspicion} & \textbf{final_accuracy} & \textbf{peak_accuracy} & \textbf{convergence_round} & \textbf{reward_leakage} & \textbf{reward_eligible_honest_rows} & \textbf{honest_reward_starvation_count} & \textbf{honest_reward_starvation_rate} & \textbf{attack_detection_rate} & \textbf{attack_reward_block_rate} & \textbf{false_positive_detection_rate} & \textbf{false_positive_quarantine_rate} & \textbf{data_commitment_anomaly_rate} & \textbf{low_quality_outlier_rate} & \textbf{inefficient_update_rate} & \textbf{suspicion_quarantine_rate} & \textbf{jain} & \textbf{gini} & \textbf{fairness_gap} & \textbf{fairness_gap_alignment} & \textbf{reward_alignment_corr} \\
+\midrule
+mnist & K3 (dirichlet=0.1) & csra_dcd+csra & CSRA-DCD + CSRAReward & clean & clean & 0.5000 & 0.3000 & 0.2000 & 3.0000 & -0.8000 & 0.0000 & 0.5000 & 6.0000 & 0.6000 & 1.0000 & 2.0000 & 0.5000 & 1.0000 & 0.8000 & 1.0000 & 1.5000 & 4.0000 & 1.0000 & 0.5297 & 0.5297 & 1 & 0.0000 & 5 & 0 & 0.0000 & - & - & 0.0000 & 0.0000 & 0.0000 & 0.0000 & 0.0000 & 0.0000 & 0.8620 & 0.2149 & 0.0554 & 0.0611 & 0.9262 \\
+\bottomrule
+\end{tabular}
+\end{table}

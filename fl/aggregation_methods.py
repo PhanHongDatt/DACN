@@ -84,6 +84,68 @@ def _weighted_average(
     return result
 
 
+def _flatten_delta(params: ParameterLayers, base_params: ParameterLayers) -> np.ndarray:
+    """Flatten one client update delta into a single vector."""
+    if len(params) != len(base_params):
+        raise ValueError(
+            f"params has {len(params)} layers, base_params has {len(base_params)}"
+        )
+    return np.concatenate([
+        (
+            np.asarray(local, dtype=np.float64).ravel()
+            - np.asarray(base, dtype=np.float64).ravel()
+        )
+        for local, base in zip(params, base_params)
+    ])
+
+
+def compute_update_features(
+    client_params: Sequence[ParameterLayers],
+    base_params: ParameterLayers,
+) -> dict:
+    """
+    Compute server-side update features from received parameters.
+
+    Features:
+      - update_norms: ||local_params_i - global_params||_2
+      - update_stds: Standard deviation của vector delta_i (STD-DAGMM logic)
+      - cosine_to_reference: cosine(delta_i, median_delta)
+
+    The reference delta is coordinate-wise median across participating clients.
+    This is more robust than mean when a minority sends sign-flipped updates.
+    """
+    _validate_inputs(client_params)
+    n_layers = len(client_params[0])
+    if len(base_params) != n_layers:
+        raise ValueError(
+            f"base_params has {len(base_params)} layers, expected {n_layers}"
+        )
+
+    deltas = [_flatten_delta(params, base_params) for params in client_params]
+    if not deltas:
+        return {"update_norms": [], "cosine_to_reference": []}
+
+    delta_matrix = np.stack(deltas, axis=0)
+    update_norms = np.linalg.norm(delta_matrix, axis=1)
+    update_stds = np.std(delta_matrix, axis=1)
+
+    reference = np.median(delta_matrix, axis=0)
+    reference_norm = float(np.linalg.norm(reference))
+    cosines: list[float] = []
+    for delta, norm in zip(delta_matrix, update_norms):
+        denom = float(norm) * reference_norm
+        if denom < _EPS:
+            cosines.append(0.0)
+        else:
+            cosines.append(float(np.dot(delta, reference) / denom))
+
+    return {
+        "update_norms": [float(v) for v in update_norms],
+        "update_stds": [float(v) for v in update_stds],
+        "cosine_to_reference": cosines,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Method 1: FedAvg
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,28 +288,40 @@ def csra_dcd_aggregation(
     client_params: Sequence[ParameterLayers],
     weights: Sequence[float],
     anomaly_scores: Sequence[float],
+    update_cosines: Sequence[float] | None = None,
     mad_threshold: float = 3.0,
+    cosine_threshold: float = -0.8,
+    direction_min_norm_z: float = 0.0,
     min_honest_ratio: float = 0.5,
+    fallback_hard_z: float = 6.0,
     mad_epsilon: float = 1e-8,
-) -> tuple[ParameterLayers, list[bool], list[float], str]:
+) -> tuple[ParameterLayers, list[bool], list[float], str, dict]:
     """
-    CSRA-DCD aggregation: phát hiện anomaly bằng MAD, loại các client bị flag,
-    rồi FedAvg trên phần còn lại.
+    CSRA-DCD aggregation: phát hiện anomaly bằng MAD/hướng update, loại các
+    client bị flag khỏi aggregation, rồi FedAvg trên phần còn lại.
 
-    Failsafe: nếu số client còn lại sau filter < min_honest_ratio * n,
-    fallback chấp nhận tất cả (tránh trường hợp filter quá mạnh phá round).
+    Failsafe: nếu số client còn lại sau filter < min_honest_ratio * n, fallback
+    chấp nhận tất cả cho aggregation. Reward vẫn có thể bị chặn bởi
+    reward_block_mask với tín hiệu direction anomaly có độ tin cậy cao.
 
     Args:
         client_params: list client × list layer
         weights: trọng số FedAvg (thường là num_examples)
         anomaly_scores: ||Δᵢ||₂ của mỗi client
+        update_cosines: cosine(delta_i, robust_reference_delta), optional
         mad_threshold: ngưỡng z để flag anomaly
+        cosine_threshold: ngưỡng hướng update để flag sign-flip rõ ràng
+        direction_min_norm_z: chỉ flag hướng nếu norm z ít nhất mức này
         min_honest_ratio: tỷ lệ tối thiểu client còn lại sau filter
+        fallback_hard_z: khi failsafe kích hoạt, vẫn filter/reward-block norm
+            outlier nếu robust_z >= ngưỡng này. Đặt <= 0 để tắt soft hard-filter.
         mad_epsilon: dung sai MAD
 
     Returns:
-        (aggregated_params, is_anomaly_mask, robust_z_values, detection_method)
-        is_anomaly_mask[i] = True nếu client i bị filter (và do đó nhận reward = 0).
+        (aggregated_params, is_anomaly_mask, robust_z_values, detection_method, detection_meta)
+        is_anomaly_mask[i] = True nếu client i bị filter khỏi aggregation.
+        detection_meta["reward_block_mask"][i] = True nếu client i không đủ
+        điều kiện nhận reward trong round này.
     """
     _validate_inputs(client_params, weights)
     if len(anomaly_scores) != len(client_params):
@@ -261,17 +335,88 @@ def csra_dcd_aggregation(
         anomaly_scores, mad_threshold=mad_threshold, mad_epsilon=mad_epsilon,
     )
 
-    # Failsafe: nếu filter quá mạnh, accept all
+    direction_mask = [False] * n
+    direction_risk = [0.0] * n
+    cosines: list[float | None] = [None] * n
+    if update_cosines is not None:
+        if len(update_cosines) != n:
+            raise ValueError(
+                f"update_cosines length {len(update_cosines)} != n_clients {n}"
+            )
+        cosines = [float(c) for c in update_cosines]
+        denom = max(cosine_threshold - (-1.0), _EPS)
+        for i, cosine in enumerate(cosines):
+            if cosine < cosine_threshold:
+                direction_risk[i] = min(1.0, max(0.0, (cosine_threshold - cosine) / denom))
+            direction_mask[i] = (
+                bool(cosine < cosine_threshold)
+                and bool(robust_z[i] >= direction_min_norm_z)
+            )
+
+    norm_mask = list(is_anomaly)
+    is_anomaly = [bool(nm or dm) for nm, dm in zip(norm_mask, direction_mask)]
+    detection_reasons: list[str] = []
+    risk_scores: list[float] = []
+    for i in range(n):
+        reasons = []
+        if norm_mask[i]:
+            reasons.append("norm_mad")
+        if direction_mask[i]:
+            reasons.append("direction_cosine")
+        detection_reasons.append("+".join(reasons) if reasons else "accepted")
+        norm_risk = float(robust_z[i] / mad_threshold) if mad_threshold > 0 else 0.0
+        risk_scores.append(float(max(norm_risk, direction_risk[i])))
+
+    pre_fallback_anomaly_mask = list(is_anomaly)
+    fallback_accept_all = False
+    fallback_triggered = False
+    fallback_soft_filter = False
+    fallback_hard_norm_mask = [False] * n
+
+    # Failsafe: nếu filter quá mạnh, accept all for aggregation.
+    # Soft hard-filter: nếu có norm outlier cực mạnh, vẫn loại outlier đó.
+    # Điều này giảm lỗ hổng "fallback accept all" nhưng tránh dùng ngưỡng thường
+    # để hard-filter honest clients trong Non-IID mạnh.
     n_honest = sum(1 for a in is_anomaly if not a)
     min_honest = max(1, math.ceil(n * min_honest_ratio))
     if n_honest < min_honest:
+        fallback_triggered = True
         log.warning(
             "csra_dcd: too few honest clients after filter (%d/%d) → "
-            "fallback accept all this round",
-            n_honest, n,
+            "failsafe this round",
+            n_honest,
+            n,
         )
-        is_anomaly = [False] * n
-        method = f"{method}+fallback_accept_all"
+        hard_z = float(fallback_hard_z)
+        if hard_z > 0.0:
+            fallback_hard_norm_mask = [
+                bool(norm_mask[i] and robust_z[i] >= hard_z)
+                for i in range(n)
+            ]
+
+        if any(fallback_hard_norm_mask):
+            fallback_soft_filter = True
+            is_anomaly = list(fallback_hard_norm_mask)
+            method = f"{method}+fallback_soft_filter"
+            detection_reasons = [
+                "norm_mad+fallback_hard_block"
+                if fallback_hard_norm_mask[i]
+                else "fallback_soft_accept"
+                for i in range(n)
+            ]
+        else:
+            fallback_accept_all = True
+            is_anomaly = [False] * n
+            method = f"{method}+fallback_accept_all"
+            detection_reasons = ["fallback_accept_all"] * n
+
+    if fallback_triggered:
+        reward_block_mask = [
+            bool(direction_mask[i] or fallback_hard_norm_mask[i])
+            for i in range(n)
+        ]
+    else:
+        reward_block_mask = list(is_anomaly)
 
     # Filter và aggregate
     honest_params = [
@@ -289,14 +434,139 @@ def csra_dcd_aggregation(
     else:
         aggregated = _weighted_average(honest_params, honest_weights)
 
-    return aggregated, is_anomaly, robust_z, method
+    return aggregated, is_anomaly, robust_z, method, {
+        "norm_anomaly_mask": norm_mask,
+        "direction_anomaly_mask": direction_mask,
+        "pre_fallback_anomaly_mask": pre_fallback_anomaly_mask,
+        "fallback_triggered": fallback_triggered,
+        "fallback_accept_all": fallback_accept_all,
+        "fallback_soft_filter": fallback_soft_filter,
+        "fallback_hard_norm_mask": fallback_hard_norm_mask,
+        "fallback_hard_z": float(fallback_hard_z),
+        "reward_block_mask": reward_block_mask,
+        "cosine_to_reference": cosines,
+        "risk_score": risk_scores,
+        "detection_reasons": detection_reasons,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Method 4: FedLAW — Learnable Aggregation Weights (Byzantine Robust)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def project_capped_simplex(h: np.ndarray, s: int, t: float) -> np.ndarray:
+    """
+    Toán tử chiếu Simplex với ràng buộc thưa s và chặn trên t:
+        Proj_Δ+(h) = argmin_w ||w - h||^2
+        s.t. sum(w) = 1, 0 <= w_i <= t, ||w||_0 <= s
+
+    Thuật toán:
+      1. Chọn s phần tử lớn nhất trong h. Các phần tử khác gán về 0.
+      2. Chiếu s phần tử này lên unit-capped simplex (0 <= w_i <= t, sum = 1).
+    """
+    n = len(h)
+    s = min(max(1, s), n)
+    t = max(1.0 / s, t)
+
+    # Bước 1: Sparsity constraint (giữ s phần tử lớn nhất)
+    indices = np.argsort(h)[::-1]
+    top_s_indices = indices[:s]
+    w = np.zeros_like(h)
+    v = h[top_s_indices]
+
+    # Bước 2: Capped Simplex Projection (v ∈ R^s)
+    # Thuật toán lặp/chia nhị phân để tìm ngưỡng λ sao cho sum(clip(v - λ, 0, t)) = 1
+    low = np.min(v) - 1.0
+    high = np.max(v)
+    for _ in range(50):  # Đủ để đạt độ chính xác float
+        mid = (low + high) / 2
+        current_sum = np.sum(np.clip(v - mid, 0, t))
+        if current_sum > 1.0:
+            low = mid
+        else:
+            high = mid
+
+    w[top_s_indices] = np.clip(v - high, 0, t)
+    # Đảm bảo tổng chính xác bằng 1 (do sai số float)
+    w_sum = w.sum()
+    if w_sum > 0:
+        w = w / w_sum
+    return w
+
+
+def fedlaw_aggregation(
+    client_params: Sequence[ParameterLayers],
+    trial_params: Sequence[ParameterLayers],
+    base_params: ParameterLayers,
+    w_k: np.ndarray,
+    local_losses: np.ndarray,
+    alpha: float,
+    beta_law: float,
+    sparsity_s: int,
+    capping_t: float,
+) -> tuple[ParameterLayers, np.ndarray, np.ndarray, dict]:
+    """
+    FedLAW (Algorithm 2 trong bài báo):
+      1. h_k = w_k + α·β_law·G_k^T·G_tilde·w_k - β_law·f_tilde
+      2. w_k+1 = Proj_Δ+(h_k)
+      3. θ_k+1 = θ_k - α·Σ w_i·g_i
+
+    Args:
+        client_params: G_k (gradients vòng 1)
+        trial_params: G_tilde (gradients vòng 2 tại mô hình thử nghiệm)
+        base_params: θ_k (mô hình toàn cục đầu epoch)
+        w_k: trọng số aggregation hiện tại
+        local_losses: f_tilde (losses tại mô hình thử nghiệm)
+        alpha: learning rate của mô hình
+        beta_law: learning rate của trọng số
+        sparsity_s: số lượng client được giữ lại (s)
+        capping_t: chặn trên trọng số của 1 client (t)
+
+    Returns:
+        (aggregated_params, w_next, alignment_scores, metadata)
+    """
+    _validate_inputs(client_params)
+    _validate_inputs(trial_params)
+    n = len(client_params)
+
+    # Flatten gradients: G_k và G_tilde
+    G_k = np.stack([_flatten_delta(p, base_params) / alpha for p in client_params], axis=1)  # (d, n)
+    G_tilde = np.stack([_flatten_delta(p, base_params) / alpha for p in trial_params], axis=1)  # (d, n)
+
+    # Gradient Alignment: G_k^T * G_tilde * w_k
+    # (n, d) * (d, n) * (n, 1) -> (n, 1)
+    # Chú ý: G_tilde * w_k là hướng đi chung của trial aggregation
+    agg_trial_direction = G_tilde @ w_k
+    alignment = G_k.T @ agg_trial_direction
+
+    # Pre-projection score h_k
+    # f_tilde cần được scale tương ứng để tránh áp đảo gradient alignment
+    h_k = w_k + alpha * beta_law * alignment - beta_law * local_losses
+
+    # Weight update via capped simplex projection
+    w_next = project_capped_simplex(h_k, sparsity_s, capping_t)
+
+    # Final aggregation: dùng G_k (gradients vòng 1) với trọng số mới
+    # θ_k+1 = θ_k - α * Σ w_i * g_i
+    # Tương đương FedAvg trên client_params với weights = w_next
+    aggregated = _weighted_average(client_params, w_next)
+
+    # Detection logic: client bị ép về 0 được coi là anomaly
+    anomaly_mask = [bool(w < 1e-6) for w in w_next]
+
+    return aggregated, w_next, alignment, {
+        "anomaly_mask": anomaly_mask,
+        "h_k": h_k,
+        "alignment_scores": alignment,
+        "w_next": w_next,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Registry & dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-AGGREGATION_NAMES = ("fedavg", "trimmed", "csra_dcd")
+AGGREGATION_NAMES = ("fedavg", "trimmed", "csra_dcd", "fedlaw")
 
 
 def apply_aggregation(
@@ -304,10 +574,22 @@ def apply_aggregation(
     client_params: Sequence[ParameterLayers],
     weights: Sequence[float],
     *,
+    trial_params: Sequence[ParameterLayers] | None = None,
+    base_params: ParameterLayers | None = None,
+    w_k: np.ndarray | None = None,
+    local_losses: np.ndarray | None = None,
+    alpha: float = 0.1,
+    beta_law: float = 0.01,
+    sparsity_s: int = 10,
+    capping_t: float = 0.2,
     anomaly_scores: Sequence[float] | None = None,
+    update_cosines: Sequence[float] | None = None,
     trim_ratio: float = 0.1,
     mad_threshold: float = 3.0,
+    cosine_threshold: float = -0.8,
+    direction_min_norm_z: float = 0.0,
     min_honest_ratio: float = 0.5,
+    fallback_hard_z: float = 6.0,
     mad_epsilon: float = 1e-8,
 ) -> tuple[ParameterLayers, dict]:
     """
@@ -319,7 +601,7 @@ def apply_aggregation(
     metadata['detection_method']: str | None (chỉ với csra_dcd)
 
     Args:
-        method: "fedavg" | "trimmed" | "csra_dcd"
+        method: "fedavg" | "trimmed" | "csra_dcd" | "fedlaw"
 
     Raises:
         ValueError: method không hợp lệ hoặc thiếu input cần thiết.
@@ -338,6 +620,17 @@ def apply_aggregation(
             "anomaly_mask": [False] * n,
             "robust_z": None,
             "detection_method": None,
+            "direction_anomaly_mask": [False] * n,
+            "pre_fallback_anomaly_mask": [False] * n,
+            "fallback_triggered": False,
+            "fallback_accept_all": False,
+            "fallback_soft_filter": False,
+            "fallback_hard_norm_mask": [False] * n,
+            "fallback_hard_z": None,
+            "reward_block_mask": [False] * n,
+            "cosine_to_reference": None,
+            "risk_score": None,
+            "detection_reasons": ["accepted"] * n,
         }
 
     if method == "trimmed":
@@ -346,21 +639,61 @@ def apply_aggregation(
             "anomaly_mask": [False] * n,  # TrimmedMean trim coordinate-wise, không client-wise
             "robust_z": None,
             "detection_method": None,
+            "direction_anomaly_mask": [False] * n,
+            "pre_fallback_anomaly_mask": [False] * n,
+            "fallback_triggered": False,
+            "fallback_accept_all": False,
+            "fallback_soft_filter": False,
+            "fallback_hard_norm_mask": [False] * n,
+            "fallback_hard_z": None,
+            "reward_block_mask": [False] * n,
+            "cosine_to_reference": None,
+            "risk_score": None,
+            "detection_reasons": ["accepted"] * n,
+        }
+
+    if method == "fedlaw":
+        if trial_params is None or base_params is None or w_k is None or local_losses is None:
+            raise ValueError("fedlaw needs trial_params, base_params, w_k, and local_losses")
+        params, w_next, alignment, meta = fedlaw_aggregation(
+            client_params=client_params,
+            trial_params=trial_params,
+            base_params=base_params,
+            w_k=w_k,
+            local_losses=local_losses,
+            alpha=alpha,
+            beta_law=beta_law,
+            sparsity_s=sparsity_s,
+            capping_t=capping_t,
+        )
+        return params, {
+            **meta,
+            "robust_z": None,
+            "detection_method": "fedlaw_projection",
+            "reward_block_mask": meta["anomaly_mask"],
+            "detection_reasons": [
+                "fedlaw_blocked" if a else "accepted" for a in meta["anomaly_mask"]
+            ]
         }
 
     # method == "csra_dcd"
     if anomaly_scores is None:
         raise ValueError("anomaly_scores required for method='csra_dcd'")
-    params, mask, z, det_method = csra_dcd_aggregation(
+    params, mask, z, det_method, det_meta = csra_dcd_aggregation(
         client_params=client_params,
         weights=weights,
         anomaly_scores=anomaly_scores,
+        update_cosines=update_cosines,
         mad_threshold=mad_threshold,
+        cosine_threshold=cosine_threshold,
+        direction_min_norm_z=direction_min_norm_z,
         min_honest_ratio=min_honest_ratio,
+        fallback_hard_z=fallback_hard_z,
         mad_epsilon=mad_epsilon,
     )
     return params, {
         "anomaly_mask": mask,
         "robust_z": z,
         "detection_method": det_method,
+        **det_meta,
     }

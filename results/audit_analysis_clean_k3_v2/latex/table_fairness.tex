@@ -1,0 +1,12 @@
+\begin{table}[htbp]
+\centering
+\caption{Reward fairness metrics by scenario and method}
+\label{tab:fairness_schema_v2}
+\begin{tabular}{lllllllllllllllllllllll}
+\toprule
+\textbf{dataset} & \textbf{scenario_variant} & \textbf{method} & \textbf{mad_threshold} & \textbf{cosine_threshold} & \textbf{direction_min_norm_z} & \textbf{min_honest_ratio} & \textbf{fallback_hard_z} & \textbf{suspicion_decay} & \textbf{suspicion_threshold} & \textbf{low_quality_z_threshold} & \textbf{low_quality_suspicion} & \textbf{zero_data_suspicion} & \textbf{anomaly_suspicion} & \textbf{authenticity_suspicion} & \textbf{low_authenticity_threshold} & \textbf{high_update_norm_z_threshold} & \textbf{inefficient_update_suspicion} & \textbf{jain} & \textbf{gini} & \textbf{fairness_gap} & \textbf{reward_variance} & \textbf{method_label} \\
+\midrule
+mnist & K3 (dirichlet=0.1) & csra_dcd+csra & 3.0000 & -0.8000 & 0.0000 & 0.5000 & 6.0000 & 0.6000 & 1.0000 & 2.0000 & 0.5000 & 1.0000 & 0.8000 & 1.0000 & 1.5000 & 4.0000 & 1.0000 & 0.8620 & 0.2149 & 0.0554 & 0.0064 & M6 CSRA-DCD + CSRAReward \\
+\bottomrule
+\end{tabular}
+\end{table}

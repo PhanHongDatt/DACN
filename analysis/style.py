@@ -1,10 +1,43 @@
-"""style.py — Shared matplotlib style constants."""
+"""style.py - Shared matplotlib style constants for schema v2."""
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
 
-# Color palette per config
-CONFIG_COLORS = {
+# Schema v2 method labels. Blockchain is an audit layer, not a comparison axis.
+METHOD_LABELS = {
+    "fedavg+equal": "M1 FedAvg + EqualSplit",
+    "fedavg+data": "M2 FedAvg + DataSize",
+    "fedavg+quality": "M3 FedAvg + QualityOnly",
+    "fedavg+csra": "M4 FedAvg + CSRAReward",
+    "csra_dcd+equal": "M5 CSRA-DCD + EqualSplit",
+    "csra_dcd+csra": "M6 CSRA-DCD + CSRAReward",
+}
+
+METHOD_COLORS = {
+    "fedavg+equal": "#4E79A7",
+    "fedavg+data": "#59A14F",
+    "fedavg+quality": "#F28E2B",
+    "fedavg+csra": "#B07AA1",
+    "csra_dcd+equal": "#E15759",
+    "csra_dcd+csra": "#2F7F6F",
+}
+
+METHOD_ORDER = [
+    "fedavg+equal",
+    "fedavg+data",
+    "fedavg+quality",
+    "fedavg+csra",
+    "csra_dcd+equal",
+    "csra_dcd+csra",
+]
+
+# Backward-compatible aliases used by existing plotting code.
+CONFIG_COLORS = METHOD_COLORS
+CONFIG_LABELS = METHOD_LABELS
+CONFIG_ORDER = METHOD_ORDER
+
+# Legacy constants kept only to parse/read old artifacts if needed.
+LEGACY_CONFIG_COLORS = {
     "A": "#E07070",
     "B": "#4A90D9",
     "C": "#5CB85C",
@@ -12,20 +45,30 @@ CONFIG_COLORS = {
     "C-CSRA-Opt": "#1B5E20",
     "TrimmedMean": "#8E6BBE",
 }
-CONFIG_LABELS = {
+LEGACY_CONFIG_LABELS = {
     "A": "Traditional FL",
-    "B": "Blockchain Baseline",
-    "C": "CSRA Reward",
-    "C-CSRA": "CSRA-DCD Reward",
-    "C-CSRA-Opt": "CSRA-DCD Reward (Optimized)",
+    "B": "Legacy B",
+    "C": "Legacy CSRA Reward",
+    "C-CSRA": "Legacy CSRA-DCD Reward",
+    "C-CSRA-Opt": "Legacy CSRA-DCD Reward (Optimized)",
     "TrimmedMean": "TrimmedMean Robust FL",
 }
-CONFIG_ORDER = ["A", "B", "TrimmedMean", "C", "C-CSRA", "C-CSRA-Opt"]
+
+CONFIG_COLORS.update(LEGACY_CONFIG_COLORS)
+CONFIG_LABELS.update(LEGACY_CONFIG_LABELS)
+
 ALPHA_COLORS = {
     0.0: "#9E9E9E", 0.3: "#42A5F5", 0.5: "#66BB6A",
     0.7: "#FFA726", 1.0: "#EF5350",
 }
-TYPE_COLORS = {"honest": "#4A90D9", "free_rider": "#E07070", "lazy": "#FFA726"}
+TYPE_COLORS = {
+    "honest": "#4A90D9",
+    "free_rider": "#E07070",
+    "stealth_free_rider": "#B22222",
+    "lazy": "#FFA726",
+    "label_noise": "#8E6BBE",
+    "sign_flip": "#D95F02",
+}
 
 
 def ordered_configs(configs):

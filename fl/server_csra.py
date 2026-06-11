@@ -5,6 +5,7 @@ system robustness against free-riders and malicious updates.
 """
 import logging
 import math
+import warnings
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 import flwr as fl
@@ -15,6 +16,12 @@ from fl.config import ProjectConfig
 from fl.logger import ExperimentLogger
 
 logger = logging.getLogger(__name__)
+warnings.warn(
+    "fl.server_csra is legacy and can mix reputation into aggregation. Use "
+    "fl.server_base.FLUnifiedStrategy for schema-v2 experiments.",
+    RuntimeWarning,
+    stacklevel=2,
+)
 
 class FLCSRAStrategy(fl.server.strategy.FedAvg):
     """

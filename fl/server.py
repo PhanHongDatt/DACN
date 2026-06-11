@@ -3,6 +3,7 @@ server.py — Flower server với custom FedAvg strategy tích hợp blockchain.
 Sau mỗi vòng: thu quality_score từ clients → ghi lên contract → phân phối reward.
 """
 import logging
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,6 +24,12 @@ from fl.config import ProjectConfig
 from fl.logger import ExperimentLogger
 
 logger = logging.getLogger(__name__)
+warnings.warn(
+    "fl.server is legacy. Use fl.server_base.FLUnifiedStrategy for schema-v2 "
+    "experiments so aggregation and reward policies stay separated.",
+    RuntimeWarning,
+    stacklevel=2,
+)
 
 
 class FLBlockchainStrategy(fl.server.strategy.FedAvg):

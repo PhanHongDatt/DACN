@@ -6,13 +6,18 @@ pragma solidity ^0.8.19;
  * @notice Lưu lịch sử đóng góp của mỗi client bằng circular buffer
  *         kích thước cố định W_SIZE=10. Tránh gas O(R) của dynamic array.
  *
- * Reputation tính từ DATA COMMITMENT (d_k / D_mean), không phải quality
- * score, để tránh double-counting khi nhân vào reward.
+ * Reputation tính từ EWMA của capped DATA COMMITMENT và quality score.
+ * Contract chỉ dùng fixed-point audit signals do Python gửi lên; ML detector
+ * phức tạp vẫn nằm off-chain.
  */
 contract ContributionStore {
     uint8  public constant WINDOW_SIZE   = 10;
     uint8  public constant MIN_WARMUP    = 5;      // vòng warm-up trước khi lọc
     uint256 public constant REP_THRESHOLD = 100000; // 0.1 × 1e6
+    uint256 public constant SCALE = 1000000;
+    uint256 public constant REP_DECAY = 900000; // 0.9 × 1e6
+    uint256 public constant DATA_WEIGHT = 700000; // 70%
+    uint256 public constant QUALITY_WEIGHT = 300000; // 30%
 
     struct ClientData {
         uint256[10] qualityHistory;    // quality score × 1e6 (từ Python)
@@ -58,8 +63,12 @@ contract ContributionStore {
         emit ContributionRecorded(client, round, qualityScaled, dataCommitScaled);
     }
 
+    function _capToScale(uint256 value) private pure returns (uint256) {
+        return value > SCALE ? SCALE : value;
+    }
+
     /**
-     * @notice Tính reputation từ data commitment history (EWMA, β=0.9)
+     * @notice Tính reputation từ data commitment + quality history (EWMA, β=0.9)
      * @return rep       Reputation value × 1e6
      * @return isHonest  true nếu đủ điều kiện tham gia reward round
      */
@@ -71,19 +80,23 @@ contract ContributionStore {
 
         uint8   filled      = cd.roundsRecorded < WINDOW_SIZE
                               ? uint8(cd.roundsRecorded) : WINDOW_SIZE;
-        uint256 beta        = 900000; // 0.9 × 1e6
         uint256 weight      = 1000000;
         uint256 weightedSum = 0;
         uint256 totalWeight = 0;
 
         for (uint8 i = 0; i < filled; i++) {
             uint8 idx = (cd.currentIndex + WINDOW_SIZE - 1 - i) % WINDOW_SIZE;
-            weightedSum += (weight * cd.dataCommitHistory[idx]) / 1000000;
+            uint256 dataScore = _capToScale(cd.dataCommitHistory[idx]);
+            uint256 qualityScore = _capToScale(cd.qualityHistory[idx]);
+            uint256 roundScore = (
+                (dataScore * DATA_WEIGHT) + (qualityScore * QUALITY_WEIGHT)
+            ) / SCALE;
+            weightedSum += (weight * roundScore) / SCALE;
             totalWeight += weight;
-            weight       = (weight * beta) / 1000000;
+            weight       = (weight * REP_DECAY) / SCALE;
         }
 
-        rep      = totalWeight > 0 ? (weightedSum * 1000000) / totalWeight : 0;
+        rep      = totalWeight > 0 ? (weightedSum * SCALE) / totalWeight : 0;
         isHonest = rep >= REP_THRESHOLD;
     }
 

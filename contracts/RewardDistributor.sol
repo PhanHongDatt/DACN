@@ -14,6 +14,7 @@ import "./ContributionStore.sol";
 contract RewardDistributor {
     ContributionStore public store;
     address public owner;
+    mapping(uint256 => bool) public roundPaid;
 
     event RewardDistributed(uint256 indexed round, uint256 totalPool, uint256 nClients);
     event ClientRewarded(address indexed client, uint256 amount, uint256 weightScaled);
@@ -41,11 +42,20 @@ contract RewardDistributor {
         uint256 round
     ) external payable onlyOwner {
         require(honestClients.length == weightsScaled.length, "Length mismatch");
+        require(honestClients.length > 0, "No clients");
         require(msg.value > 0, "No ETH sent");
+        require(!roundPaid[round], "Round already paid");
 
         uint256 weightSum = 0;
-        for (uint i = 0; i < weightsScaled.length; i++) weightSum += weightsScaled[i];
+        for (uint i = 0; i < weightsScaled.length; i++) {
+            require(honestClients[i] != address(0), "Zero client");
+            for (uint j = 0; j < i; j++) {
+                require(honestClients[i] != honestClients[j], "Duplicate client");
+            }
+            weightSum += weightsScaled[i];
+        }
         require(weightSum > 0, "Zero weight sum");
+        roundPaid[round] = true;
 
         uint256 totalPool = msg.value;
         uint256 distributed = 0;

@@ -29,7 +29,7 @@ _FNAME_RE = re.compile(
     r"_(?P<reward_policy>equal|data|quality|csra)"
     r"_b(?P<beta_raw>\d{2})g(?P<gamma_raw>\d{2})d(?P<delta_raw>\d{2})"
     r"_s(?P<seed>\d+)"
-    r"_(?P<attack_type>clean|free_rider|lazy|label_noise|sign_flip)"
+    r"_(?P<attack_type>clean|free_rider|stealth_free_rider|lazy|label_noise|sign_flip)"
     r"_(?P<timestamp>\d{8}_\d{6})\.csv$"
 )
 
@@ -46,7 +46,39 @@ _REWARD_LABEL = {
     "csra": "CSRAReward",
 }
 _SCENARIO_ORDER = {"K1": 1, "K2": 2, "K3": 3}
-_MALICIOUS_CLIENT_TYPES = {"free_rider", "lazy", "label_noise", "sign_flip", "malicious"}
+_MALICIOUS_CLIENT_TYPES = {
+    "free_rider", "stealth_free_rider", "lazy", "label_noise",
+    "sign_flip", "malicious",
+}
+_TRUE_STRINGS = {"1", "true", "t", "yes", "y"}
+_FALSE_STRINGS = {"0", "false", "f", "no", "n", ""}
+
+
+def _coerce_bool_series(
+    series: pd.Series,
+    *,
+    default: bool = False,
+    preserve_na: bool = False,
+) -> pd.Series:
+    """
+    Parse schema booleans from logger CSVs and pandas-written CSVs.
+
+    Logger normally writes 1/0, but tests and external tools may write
+    True/False strings. When preserve_na=True, missing/unparseable values stay
+    NA so caller can fall back to other evidence such as client_type.
+    """
+    result = pd.Series(pd.NA if preserve_na else default, index=series.index, dtype="object")
+    numeric = pd.to_numeric(series, errors="coerce")
+    numeric_present = numeric.notna()
+    result.loc[numeric_present] = numeric.loc[numeric_present].astype(float) != 0.0
+
+    text = series.astype("string").str.strip().str.lower()
+    result.loc[text.isin(_TRUE_STRINGS)] = True
+    result.loc[text.isin(_FALSE_STRINGS)] = False
+
+    if preserve_na:
+        return result.astype("boolean")
+    return result.fillna(default).astype(bool)
 
 
 def _parse_filename(fname: str) -> dict | None:
@@ -95,8 +127,9 @@ def load_all_logs(log_dir: Path) -> pd.DataFrame | None:
         reward_label, beta, gamma, delta, seed, attack_type, dirichlet_alpha,
         timestamp, run_id
       - Per-row CSV: round_num, client_id, client_type, quality_score, data_size,
-        w_new, reputation, reward_eth, is_honest, anomaly_score, robust_z,
-        is_anomaly, detection_reason, global_accuracy
+        w_new, reputation, reward_eth, reward_blocked, reward_eligible,
+        ground_truth_honest, is_honest,
+        anomaly_score, robust_z, is_anomaly, detection_reason, global_accuracy
       - Computed: scenario_variant, is_malicious, has_attack, attack_label,
         run_rounds_observed, run_max_round, run_rows_observed
 
@@ -151,29 +184,46 @@ def load_all_logs(log_dir: Path) -> pd.DataFrame | None:
         combined.rename(columns={"quality_score": "quality"}, inplace=True)
 
     # ── Type coercions ──────────────────────────────────────────────────────
-    int_cols = ["round_num", "client_id", "data_size", "seed"]
+    int_cols = [
+        "round_num", "client_id", "data_size", "reported_data_size",
+        "server_known_data_size", "seed", "num_clients", "num_rounds",
+        "local_epochs", "batch_size",
+    ]
     for col in int_cols:
         if col in combined.columns:
             combined[col] = pd.to_numeric(combined[col], errors="coerce")
 
     float_cols = [
-        "quality", "w_new", "reputation", "reward_eth", "global_accuracy",
+        "quality", "w_new", "reputation", "reward_eth",
+        "global_accuracy", "global_loss",
         "beta", "gamma", "delta", "anomaly_score", "robust_z",
+        "learning_rate", "client_fraction",
+        "mad_threshold", "cosine_threshold", "direction_min_norm_z",
+        "min_honest_ratio", "fallback_hard_z",
+        "suspicion_decay", "suspicion_threshold", "low_quality_z_threshold",
+        "low_quality_suspicion", "zero_data_suspicion", "anomaly_suspicion",
+        "authenticity_suspicion", "low_authenticity_threshold",
+        "high_update_norm_z_threshold", "inefficient_update_suspicion",
+        "cosine_to_reference", "risk_score",
+        "raw_update_norm", "raw_update_norm_z", "normalized_update_score",
+        "authenticity_score", "alignment_score", "simplex_weight",
+        "suspicion_signal", "suspicion_score",
+        "reward_component_quality", "reward_component_data",
+        "reward_component_reputation",
     ]
     for col in float_cols:
         if col in combined.columns:
             combined[col] = pd.to_numeric(combined[col], errors="coerce")
 
-    if "is_honest" in combined.columns:
-        combined["is_honest"] = (
-            pd.to_numeric(combined["is_honest"], errors="coerce")
-            .fillna(0).astype(bool)
-        )
-    if "is_anomaly" in combined.columns:
-        combined["is_anomaly"] = (
-            pd.to_numeric(combined["is_anomaly"], errors="coerce")
-            .fillna(0).astype(bool)
-        )
+    for col in [
+        "is_honest", "is_anomaly", "direction_anomaly", "reward_blocked",
+        "reward_eligible",
+        "data_commitment_anomaly", "data_size_mismatch",
+        "low_quality_outlier", "inefficient_update", "suspicion_quarantine",
+        "persistent_clients",
+    ]:
+        if col in combined.columns:
+            combined[col] = _coerce_bool_series(combined[col])
 
     # ── Scenario variant (giữ K3@α=0.1 và K3@α=0.5 tách biệt) ──────────────
     if "scenario" in combined.columns and "dirichlet_alpha" in combined.columns:
@@ -195,13 +245,45 @@ def load_all_logs(log_dir: Path) -> pd.DataFrame | None:
             combined["aggregation_label"].astype(str) + " + " +
             combined["reward_label"].astype(str)
         )
+        # Compatibility aliases for plotting/stat code that historically used
+        # `config`. In schema v2, the method is the comparison unit; blockchain
+        # is only an audit layer and is not represented as a config axis.
+        combined["config"] = combined["method"]
+        combined["config_label"] = combined["method_label"]
+
+    if "alpha" not in combined.columns and "beta" in combined.columns:
+        # Old analysis code plotted alpha sweeps. Schema v2 uses beta/gamma/delta.
+        # Keep alpha as a harmless alias so legacy plotting code can run, while
+        # new reports should refer to beta.
+        combined["alpha"] = combined["beta"]
 
     # ── Malicious / attack flags ────────────────────────────────────────────
     if "client_type" in combined.columns:
         combined["client_type"] = combined["client_type"].fillna("unknown").astype(str)
-        combined["is_malicious"] = combined["client_type"].isin(_MALICIOUS_CLIENT_TYPES)
+        type_malicious = combined["client_type"].isin(_MALICIOUS_CLIENT_TYPES)
     else:
-        combined["is_malicious"] = False
+        type_malicious = pd.Series(False, index=combined.index, dtype=bool)
+
+    if "ground_truth_honest" in combined.columns:
+        truth_bool = _coerce_bool_series(
+            combined["ground_truth_honest"],
+            preserve_na=True,
+        )
+        truth_present = truth_bool.notna()
+        combined["ground_truth_honest"] = truth_bool.fillna(~type_malicious).astype(bool)
+        combined["is_malicious"] = type_malicious.where(
+            ~truth_present, ~combined["ground_truth_honest"]
+        )
+    else:
+        combined["is_malicious"] = type_malicious
+        combined["ground_truth_honest"] = ~combined["is_malicious"]
+    if "reward_eligible" not in combined.columns:
+        if "is_honest" in combined.columns:
+            combined["reward_eligible"] = combined["is_honest"]
+        elif "reward_blocked" in combined.columns:
+            combined["reward_eligible"] = ~combined["reward_blocked"]
+        else:
+            combined["reward_eligible"] = False
 
     if "attack_type" in combined.columns:
         combined["has_attack"] = combined["attack_type"].astype(str) != "clean"
