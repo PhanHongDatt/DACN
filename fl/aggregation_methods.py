@@ -451,6 +451,83 @@ def csra_dcd_aggregation(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Method 3.5: CSRA-Soft (Exponential Decay for Lazy Clients)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def csra_soft_aggregation(
+    client_params: Sequence[ParameterLayers],
+    weights: Sequence[float],
+    anomaly_scores: Sequence[float],
+    update_cosines: Sequence[float] | None = None,
+    mad_threshold: float = 3.0,
+    cosine_threshold: float = -0.8,
+    direction_min_norm_z: float = 0.0,
+    lambda_decay: float = 1.0,
+    min_soft_weight: float = 0.05,
+    mad_epsilon: float = 1e-8,
+) -> tuple[ParameterLayers, list[bool], list[float], str, dict]:
+    """
+    Soft aggregation variant of CSRA-DCD.
+    Uses exponential decay for MAD norm risk instead of hard block.
+    Formula: w_soft = max(min_w, exp(-lambda * robust_z))
+    Hard block overrides (w=0) apply for sign-flip.
+    """
+    from fl.aggregation_methods import detect_anomalies, _weighted_average, _EPS
+    
+    _validate_inputs(client_params, weights)
+    n = len(client_params)
+    
+    _, robust_z, method = detect_anomalies(
+        anomaly_scores, mad_threshold=mad_threshold, mad_epsilon=mad_epsilon,
+    )
+    
+    direction_block = [False] * n
+    cosines: list[float | None] = [None] * n
+    if update_cosines is not None:
+        cosines = [float(c) for c in update_cosines]
+        for i, cosine in enumerate(cosines):
+            direction_block[i] = (
+                bool(cosine < cosine_threshold)
+                and bool(robust_z[i] >= direction_min_norm_z)
+            )
+            
+    soft_weights = []
+    is_anomaly = list(direction_block) # Only hard-blocked are marked True
+    detection_reasons = []
+    
+    for i in range(n):
+        if direction_block[i]:
+            sw = 0.0
+            reasons = "direction_cosine+hard_block"
+        else:
+            z_val = max(0.0, robust_z[i])
+            sw = float(max(min_soft_weight, math.exp(-lambda_decay * z_val)))
+            reasons = f"soft_weight_{sw:.2f}"
+            
+        soft_weights.append(sw)
+        detection_reasons.append(reasons)
+        
+    effective_weights = [w * sw for w, sw in zip(weights, soft_weights)]
+    
+    fallback_all_blocked = False
+    if sum(effective_weights) < _EPS:
+        fallback_all_blocked = True
+        log.error("csra_soft: All clients hard blocked. Signaling fallback to global model.")
+        aggregated = client_params[0] # Dummy, server will intercept and use global model
+    else:
+        aggregated = _weighted_average(client_params, effective_weights)
+        
+    return aggregated, is_anomaly, robust_z, "csra_soft", {
+        "reward_block_mask": is_anomaly,
+        "cosine_to_reference": cosines,
+        "soft_weights": soft_weights,
+        "effective_weights": effective_weights,
+        "fallback_all_blocked": fallback_all_blocked,
+        "detection_reasons": detection_reasons,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Method 4: FedLAW — Learnable Aggregation Weights (Byzantine Robust)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -566,7 +643,7 @@ def fedlaw_aggregation(
 # Registry & dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-AGGREGATION_NAMES = ("fedavg", "trimmed", "csra_dcd", "fedlaw")
+AGGREGATION_NAMES = ("fedavg", "trimmed", "csra_dcd", "csra_soft", "fedlaw")
 
 
 def apply_aggregation(
@@ -676,10 +753,32 @@ def apply_aggregation(
             ]
         }
 
-    # method == "csra_dcd"
+    if method == "csra_dcd":
+        if anomaly_scores is None:
+            raise ValueError("anomaly_scores required for method='csra_dcd'")
+        params, mask, z, det_method, det_meta = csra_dcd_aggregation(
+            client_params=client_params,
+            weights=weights,
+            anomaly_scores=anomaly_scores,
+            update_cosines=update_cosines,
+            mad_threshold=mad_threshold,
+            cosine_threshold=cosine_threshold,
+            direction_min_norm_z=direction_min_norm_z,
+            min_honest_ratio=min_honest_ratio,
+            fallback_hard_z=fallback_hard_z,
+            mad_epsilon=mad_epsilon,
+        )
+        return params, {
+            "anomaly_mask": mask,
+            "robust_z": z,
+            "detection_method": det_method,
+            **det_meta,
+        }
+
+    # method == "csra_soft"
     if anomaly_scores is None:
-        raise ValueError("anomaly_scores required for method='csra_dcd'")
-    params, mask, z, det_method, det_meta = csra_dcd_aggregation(
+        raise ValueError("anomaly_scores required for method='csra_soft'")
+    params, mask, z, det_method, det_meta = csra_soft_aggregation(
         client_params=client_params,
         weights=weights,
         anomaly_scores=anomaly_scores,
@@ -687,9 +786,10 @@ def apply_aggregation(
         mad_threshold=mad_threshold,
         cosine_threshold=cosine_threshold,
         direction_min_norm_z=direction_min_norm_z,
-        min_honest_ratio=min_honest_ratio,
-        fallback_hard_z=fallback_hard_z,
         mad_epsilon=mad_epsilon,
+        # Default hyperparams for exponential decay
+        lambda_decay=1.0,
+        min_soft_weight=0.05,
     )
     return params, {
         "anomaly_mask": mask,

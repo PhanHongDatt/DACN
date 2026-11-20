@@ -238,8 +238,9 @@ def partition_dirichlet(labels: np.ndarray, n_clients: int,
 def get_client_partitions(
     dataset_name: str,
     n_clients: int,
-    cfg: ExperimentConfig
-) -> Tuple[List[np.ndarray], np.ndarray, float]:
+    cfg: ExperimentConfig,
+    n_val_samples: int = 500,
+) -> Tuple[List[np.ndarray], np.ndarray, float, Optional[np.ndarray]]:
     """
     Hàm tổng hợp: load dataset, partition theo scenario, thêm noise.
 
@@ -247,10 +248,24 @@ def get_client_partitions(
         splits:         List[np.ndarray] — index array cho từng client
         labels:         np.ndarray — labels của toàn bộ train set
         mean_data_size: float — |D̄| dùng cho Hybrid Normalization fallback
+        val_indices:    Optional[np.ndarray] — index array cho server validation
     """
     dataset = load_dataset(dataset_name, train=True)
     labels  = np.array(dataset.targets)
     n_cls   = N_CLASSES[dataset_name]
+
+    val_indices = None
+    if n_val_samples > 0:
+        rng_val = np.random.default_rng(cfg.seed + 9999) # Separate seed for val extraction
+        val_indices_list = []
+        samples_per_class = max(1, n_val_samples // n_cls)
+        for c in range(n_cls):
+            class_idx = np.where(labels == c)[0]
+            chosen = rng_val.choice(class_idx, size=min(samples_per_class, len(class_idx)), replace=False)
+            val_indices_list.extend(chosen.tolist())
+        val_indices = np.array(val_indices_list, dtype=int)
+        if len(val_indices) > n_val_samples:
+            val_indices = rng_val.choice(val_indices, size=n_val_samples, replace=False)
 
     if cfg.scenario == "K1":
         splits = partition_iid(labels, n_clients, cfg.seed)
@@ -278,8 +293,14 @@ def get_client_partitions(
     if pattern != "uniform":
         splits = apply_data_imbalance(splits, pattern, cfg.seed)
 
+    # Lọc bỏ val_indices khỏi các splits để triệt tiêu data leakage
+    if val_indices is not None:
+        val_set = set(val_indices.tolist())
+        for ci in range(len(splits)):
+            splits[ci] = np.array([idx for idx in splits[ci] if idx not in val_set], dtype=int)
+
     mean_data_size = float(np.mean([len(s) for s in splits]))
-    return splits, labels, mean_data_size
+    return splits, labels, mean_data_size, val_indices
 
 
 def make_dataloader(dataset, indices: np.ndarray, batch_size: int,

@@ -13,6 +13,7 @@ ROUNDS_WAS_SET="${ROUNDS+x}"
 LOG_DIR="${LOG_DIR:-./results/logs}"
 N_CLIENTS="${N_CLIENTS:-10}"
 LOCAL_EPOCHS="${LOCAL_EPOCHS:-1}"         # Đã giảm xuống 1 (xem PLAN §10.3 đòn bẩy 1)
+BATCH_SIZE="${BATCH_SIZE:-64}"
 TRIM_RATIO="${TRIM_RATIO:-0.1}"
 ROUNDS="${ROUNDS:-30}"                    # Đã giảm 50→30 (PLAN §10.3 đòn bẩy 3)
 SEEDS="${SEEDS:-42,123,2024}"             # clean seeds, comma-separated
@@ -75,6 +76,7 @@ Subsets (modify --full / --quick):
   --clean-only       Bỏ qua attack matrix (chỉ clean runs).
   --attack-only      Bỏ qua clean matrix (chỉ attack runs).
   --sweep-only       Chỉ chạy β sweep.
+  --no-sweep         Chạy clean/attack matrix nhưng bỏ β sweep.
   --no-cifar         Bỏ qua CIFAR-10 (cho VM yếu).
   --with-blockchain  Bật blockchain audit (default: tắt). Phải có Hardhat node.
 
@@ -86,7 +88,7 @@ Other options:
 
 Performance overrides (biến môi trường):
   PARALLEL=4 NUM_THREADS=2   # 4 cells song song, 2 thread/job (cho VM 8 core)
-  ROUNDS=25 LOCAL_EPOCHS=1   # giảm rounds + epochs để chạy nhanh hơn
+  ROUNDS=25 LOCAL_EPOCHS=1 BATCH_SIZE=64
   SEEDS=42,123               # giảm seed count
 
 Useful overrides (biến môi trường):
@@ -116,6 +118,7 @@ while [ "$#" -gt 0 ]; do
     --clean-only)  INCLUDE_ATTACK=0; INCLUDE_SWEEP=0 ;;
     --attack-only) INCLUDE_CLEAN=0;  INCLUDE_SWEEP=0 ;;
     --sweep-only)  INCLUDE_CLEAN=0;  INCLUDE_ATTACK=0 ;;
+    --no-sweep)    INCLUDE_SWEEP=0 ;;
     --no-cifar)    INCLUDE_CIFAR=0 ;;
 
     --with-blockchain)
@@ -221,6 +224,26 @@ parse_seeds() {
   echo "$1" | tr ',' '\n'
 }
 
+csv_complete_for_resume() {
+  local pattern="$1"
+  local expected_lines=$((N_CLIENTS * ROUNDS + 1))
+  local file lines
+
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+    lines=$(wc -l < "$file" 2>/dev/null || echo 0)
+    if [ "$lines" -ge "$expected_lines" ]; then
+      return 0
+    fi
+  done < <(compgen -G "$pattern")
+
+  return 1
+}
+
+csv_exists_for_pattern() {
+  compgen -G "$1" >/dev/null
+}
+
 # ── Run function: 1 cell ─────────────────────────────────────────────────────
 # Args:
 #   $1 desc          : Mô tả run (in lúc chạy)
@@ -255,10 +278,12 @@ run() {
       da_part="_da$(da_code "$da")"
     fi
     local pattern="${LOG_DIR}/${ds}_${sc}${da_part}_${agg}_${reward}_b${b_code}g${g_code}d${d_code}_s${seed}_${attack}_*.csv"
-    if ls $pattern 1>/dev/null 2>&1; then
-      echo "SKIP — $desc (CSV đã có)"
+    if csv_complete_for_resume "$pattern"; then
+      echo "SKIP — $desc (CSV đã có và đủ số dòng)"
       SKIP=$((SKIP+1))
       return 0
+    elif csv_exists_for_pattern "$pattern"; then
+      echo "RETRY — $desc (CSV cũ chưa đủ dòng hoặc bị interrupt)"
     fi
   fi
 
@@ -273,6 +298,7 @@ run() {
     --seed "$seed"
     --n-clients "$N_CLIENTS"
     --n-rounds "$ROUNDS"
+    --batch-size "$BATCH_SIZE"
     --local-epochs "$LOCAL_EPOCHS"
     --trim-ratio "$TRIM_RATIO"
     --log-dir "$LOG_DIR"
@@ -286,17 +312,21 @@ run() {
     cmd_args+=($NO_BLOCKCHAIN_FLAG)
   fi
 
-  echo ""
-  echo "━━━ $desc ━━━"
-  echo "CMD: python -m experiments.run_experiment ${cmd_args[*]}"
-
-  [ "$DRY_RUN" -eq 1 ] && return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo ""
+    echo "━━━ $desc ━━━"
+    echo "CMD: python -m experiments.run_experiment ${cmd_args[*]}"
+    return 0
+  fi
 
   if [ "$PARALLEL" -gt 1 ]; then
     # Parallel mode: chờ slot trống rồi launch background
     while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do
       sleep 1
     done
+    echo ""
+    echo "━━━ $desc ━━━"
+    echo "CMD: python -m experiments.run_experiment ${cmd_args[*]}"
     (
       if python -m experiments.run_experiment "${cmd_args[@]}" > /dev/null 2>&1; then
         echo "[OK]   $desc"
@@ -305,6 +335,9 @@ run() {
       fi
     ) &
   else
+    echo ""
+    echo "━━━ $desc ━━━"
+    echo "CMD: python -m experiments.run_experiment ${cmd_args[*]}"
     if python -m experiments.run_experiment "${cmd_args[@]}"; then
       PASS=$((PASS+1))
       echo "OK"
@@ -468,7 +501,7 @@ trap summary EXIT
 echo "════════════════════════════════════════"
 echo "  FL Reward Refactor — Experiment Launcher"
 echo "  Mode    : $MODE"
-echo "  Rounds  : $ROUNDS    Local epochs: $LOCAL_EPOCHS"
+echo "  Rounds  : $ROUNDS    Local epochs: $LOCAL_EPOCHS    Batch size: $BATCH_SIZE"
 echo "  Seeds   : $SEEDS  (attack: $ATTACK_SEEDS)"
 echo "  Log dir : $LOG_DIR"
 echo "  Cells   : 6 (M1-M6)"

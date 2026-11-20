@@ -1,0 +1,714 @@
+<USER_REQUEST>
+\chapter{THỰC NGHIỆM VÀ ĐÁNH GIÁ}
+\label{chap:thucnghiem}
+
+\section{Mục tiêu thực nghiệm}
+
+Thực nghiệm được thiết kế để đánh giá ba câu hỏi chính. Thứ nhất, CSRAReward có phân phối phần thưởng công bằng hơn EqualSplit, DataSize và QualityOnly hay không. Thứ hai, CSRA-DCD có giảm reward leakage trong các kịch bản client bất thường hay không. Thứ ba, cấu hình đầy đủ CSRA-DCD + CSRAReward có duy trì độ chính xác mô hình trong khi cải thiện tính công bằng và khả năng chống lạm dụng hay không.
+
+Trong lần chạy mới nhất, hệ thống đã sinh và phân tích 354 file log CSV với 103.870 dòng dữ liệu client-round. Bộ log gồm hai dataset MNIST và Fashion-MNIST, sáu cấu hình M1--M6, các kịch bản clean và attack, tổng cộng 162 clean runs và 192 attack runs. Phần cuối chương này trình bày kết quả định lượng, biểu đồ và nhận xét rút ra từ các log này.
+
+\section{Giả thuyết thực nghiệm}
+
+Từ các câu hỏi nghiên cứu ở Chương \ref{chap:modau}, đề tài xây dựng các giả thuyết thực nghiệm như Bảng \ref{tab:hypotheses}. Các giả thuyết này giúp tránh việc đánh giá cảm tính sau khi có kết quả; mỗi claim đều gắn với một cặp cấu hình và một nhóm metric cụ thể.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Giả thuyết thực nghiệm và cách kiểm chứng}
+    \label{tab:hypotheses}
+    \small
+    \begin{tabularx}{\textwidth}{lY Y}
+        \toprule
+        \textbf{Giả thuyết} & \textbf{Nội dung kiểm chứng} & \textbf{Metric chính} \\
+        \midrule
+        H1 & CSRAReward công bằng hơn EqualSplit trong cùng aggregation FedAvg. & Jain index tăng, fairness gap giảm khi so sánh M4 với M1. \\
+        H2 & CSRAReward giảm thiên lệch do data size so với DataSize reward. & Reward-data correlation của M4 thấp hơn M2 trong khi reward-quality correlation không giảm mạnh. \\
+        H3 & CSRAReward ổn định hơn QualityOnly khi quality score nhiễu. & Reward variance của M4 thấp hơn M3, đặc biệt trên Non-IID. \\
+        H4 & CSRA-DCD giảm reward leakage khi có client bất thường. & Reward leakage của M5 thấp hơn M1 trong attack runs. \\
+        H5 & Cấu hình đầy đủ M6 cân bằng tốt nhất giữa fairness, leakage và accuracy. & M6 có leakage thấp, Jain cao và final accuracy không giảm quá ngưỡng chấp nhận. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+\section{Môi trường thực nghiệm}
+
+Hệ thống được triển khai bằng Python 3.11, Flower 1.8.0, PyTorch, Web3.py, Hardhat và Solidity. Blockchain được chạy cục bộ bằng Hardhat node để giảm chi phí và bảo đảm khả năng tái lập. Bộ log mới nhất dùng 10 client, batch size 32, learning rate 0.01 và phần lớn run có 30 round. Khi phân tích, script phát hiện 344/354 run đủ 30 round; 10 run còn lại là run ngắn hoặc partial run, do đó các nhận xét chính được ưu tiên diễn giải theo xu hướng tổng hợp thay vì một run đơn lẻ.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Thành phần môi trường thực nghiệm}
+    \label{tab:experiment-env}
+    \small
+    \begin{tabularx}{\textwidth}{lY}
+        \toprule
+        \textbf{Thành phần} & \textbf{Cấu hình sử dụng} \\
+        \midrule
+        Ngôn ngữ & Python 3.11, JavaScript, Solidity 0.8.19. \\
+        FL framework & Flower dùng cho vòng đời client-server và mô phỏng \ac{fl} \cite{beutel2020flower}. \\
+        Deep learning & PyTorch và Torchvision cho mô hình, dataloader và dataset. \\
+        Blockchain & Hardhat local network, Web3.py bridge, ba smart contract Solidity. \\
+        Log và phân tích & CSV per run, Pandas/NumPy/SciPy/Matplotlib/Seaborn. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+\section{Tập dữ liệu và kịch bản}
+
+Thiết kế hệ thống hỗ trợ ba tập dữ liệu để tăng dần độ khó: MNIST, Fashion-MNIST và CIFAR-10 \cite{lecun1998mnist,xiao2017fashion,krizhevsky2009cifar}. MNIST phù hợp để kiểm thử nhanh, Fashion-MNIST có độ khó cao hơn trên ảnh xám, còn CIFAR-10 dùng ảnh màu và có độ phức tạp lớn hơn. Trong bộ log mới nhất được dùng cho báo cáo này, các kết quả định lượng đã có cho MNIST và Fashion-MNIST; CIFAR-10 được giữ là hướng mở rộng vì chưa có log đầy đủ trong thư mục kết quả hiện tại.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Dataset và mục đích sử dụng}
+    \label{tab:datasets}
+    \small
+    \begin{tabularx}{\textwidth}{l c Y}
+        \toprule
+        \textbf{Dataset} & \textbf{Số lớp} & \textbf{Vai trò trong đánh giá} \\
+        \midrule
+        MNIST & 10 & Kiểm thử nhanh, xác minh pipeline và so sánh baseline cơ bản. \\
+        Fashion-MNIST & 10 & Đánh giá trong bài toán ảnh xám khó hơn MNIST. \\
+        CIFAR-10 & 10 & Đánh giá độ bền của hệ thống trên ảnh màu và mô hình khó hội tụ hơn. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+\section{Ma trận cấu hình đánh giá}
+
+Để kết quả có khả năng giải thích, các cấu hình không được gom chung thành nhãn A/B/C như phiên bản đơn giản. Mỗi run được định danh bởi aggregation method, reward policy, seed, dataset, scenario và attack type. Bảng \ref{tab:comparison-plan} trình bày các phép so sánh chính cần đưa vào báo cáo cuối.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Kế hoạch so sánh giữa các cấu hình}
+    \label{tab:comparison-plan}
+    \small
+    \begin{tabularx}{\textwidth}{lY Y}
+        \toprule
+        \textbf{So sánh} & \textbf{Mục đích} & \textbf{Kết luận có thể rút ra} \\
+        \midrule
+        M4 vs M1 & Tách tác động của CSRAReward so với chia đều. & Reward đa chiều có cải thiện fairness hay không. \\
+        M4 vs M2 & So với reward chỉ dựa vào lượng dữ liệu. & CSRAReward có giảm bias cho client nhiều dữ liệu hay không. \\
+        M4 vs M3 & So với reward chỉ dựa vào quality. & Reputation và data size có làm reward ổn định hơn không. \\
+        M5 vs M1 & Tách tác động của CSRA-DCD khi reward vẫn đơn giản. & Filtering có giảm leakage hay không. \\
+        M6 vs M4 & Thêm filtering vào reward đa chiều. & CSRA-DCD có bổ sung lợi ích cho CSRAReward hay không. \\
+        M6 vs M5 & Thêm reward đa chiều vào filtering. & CSRAReward có cải thiện fairness khi đã có lọc bất thường hay không. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+\section{Kịch bản client bất thường}
+
+Đề tài mô phỏng bốn kiểu client bất thường để đánh giá tính ổn định của reward policy và cơ chế lọc:
+
+\begin{longtable}{p{0.20\textwidth}p{0.35\textwidth}p{0.35\textwidth}}
+    \caption{Các kiểu attack được mô phỏng}
+    \label{tab:attack-types} \\
+    \toprule
+    \textbf{Attack} & \textbf{Hành vi} & \textbf{Tác động cần quan sát} \\
+    \midrule
+    \endfirsthead
+    \toprule
+    \textbf{Attack} & \textbf{Hành vi} & \textbf{Tác động cần quan sát} \\
+    \midrule
+    \endhead
+    Free-rider & Không huấn luyện thật, gửi lại tham số gần global model hoặc thêm nhiễu nhỏ. & Quality thấp, reward nên giảm; khó phát hiện chỉ bằng delta norm nếu update quá nhỏ. \\
+    Lazy client & Huấn luyện ít hơn client trung thực. & Quality thường thấp hơn, reward policy cần hạn chế trả thưởng quá cao. \\
+    Label-noise & Huấn luyện trên batch có nhãn bị lật ngẫu nhiên. & Update có thể lệch, ảnh hưởng accuracy và có thể bị CSRA-DCD flag. \\
+    Sign-flip & Đảo chiều cập nhật sau huấn luyện. & Có nguy cơ phá mô hình toàn cục; cần theo dõi anomaly score và reward leakage. \\
+    \bottomrule
+\end{longtable}
+
+\FloatBarrier
+
+\section{Quy trình tái lập thí nghiệm}
+
+Để đảm bảo kết quả có thể tái lập, mỗi run cần ghi rõ seed, dataset, scenario, aggregation method, reward policy, attack type và các tham số $\beta$, $\gamma$, $\delta$. Tên file log đã mã hóa các thông tin này, ví dụ \texttt{mnist\_K3\_da010\_csra\_dcd\_csra\_b50g30d20\_s42\_free\_rider}. Khi chạy nhiều lần, chỉ thay seed hoặc tham số đã khai báo trong ma trận; không chỉnh trực tiếp code giữa các run.
+
+Quy trình thực nghiệm đề xuất:
+
+\begin{enumerate}
+    \item Chạy smoke test để xác minh pipeline, import, logging và contract compile.
+    \item Chạy clean matrix trên MNIST và Fashion-MNIST để kiểm tra accuracy/fairness trong điều kiện không attack.
+    \item Chạy attack matrix trên hai scenario khó hơn là K2 và K3 với $\alpha=0.1$.
+    \item Chạy sweep $\beta$ cho CSRAReward để đánh giá độ nhạy của trọng số quality.
+    \item Chạy CIFAR-10 sau cùng vì thời gian huấn luyện dài hơn và dễ phát sinh chi phí compute.
+\end{enumerate}
+
+\section{Lệnh chạy thực nghiệm}
+
+Các lệnh dưới đây được chạy từ thư mục \texttt{DACN/}. Trước khi chạy cần cài đặt dependencies:
+
+\begin{verbatim}
+pip install -r requirements.txt
+npm install
+npm run compile
+\end{verbatim}
+
+Nếu cần blockchain local:
+
+\begin{verbatim}
+npx hardhat node
+npm run deploy
+npm run fund
+npm run healthcheck
+\end{verbatim}
+
+Ví dụ chạy smoke test không dùng blockchain:
+
+\begin{verbatim}
+bash experiments/run_all.sh --smoke
+\end{verbatim}
+
+Ví dụ chạy cấu hình đề xuất M6 trên MNIST, K3 Dirichlet alpha 0.1:
+
+\begin{verbatim}
+python -m experiments.run_experiment \
+  --dataset mnist --scenario K3 --dirichlet-alpha 0.1 \
+  --aggregation csra_dcd --reward-policy csra \
+  --beta 0.5 --gamma 0.3 --delta 0.2 \
+  --attack free_rider --attack-client-ids 8,9 \
+  --seed 42 --n-rounds 50
+\end{verbatim}
+
+\section{Chỉ số đánh giá}
+
+Bảng \ref{tab:eval-metrics} trình bày các chỉ số được dùng khi phân tích kết quả.
+
+\begin{longtable}{p{0.23\textwidth}p{0.29\textwidth}p{0.38\textwidth}}
+    \caption{Chỉ số đánh giá thực nghiệm}
+    \label{tab:eval-metrics} \\
+    \toprule
+    \textbf{Chỉ số} & \textbf{Cách hiểu} & \textbf{Kỳ vọng với hệ thống đề xuất} \\
+    \midrule
+    \endfirsthead
+    \toprule
+    \textbf{Chỉ số} & \textbf{Cách hiểu} & \textbf{Kỳ vọng với hệ thống đề xuất} \\
+    \midrule
+    \endhead
+    Final accuracy & Accuracy ở round cuối. & Không giảm đáng kể so với FedAvg trên clean run. \\
+    Peak accuracy & Accuracy cao nhất trong toàn bộ quá trình. & Duy trì khả năng học của mô hình toàn cục. \\
+    Convergence round & Round đầu tiên đạt 95\% peak accuracy và ổn định trong cửa sổ quan sát. & Không hội tụ chậm bất thường. \\
+    Jain index & Mức công bằng phân phối reward, càng gần 1 càng đều \cite{jain1984fairness}. & Cao hơn các baseline reward thiên lệch. \\
+    Gini coefficient & Mức bất bình đẳng của reward, càng thấp càng tốt. & Thấp hơn DataSize hoặc QualityOnly khi các tín hiệu bị lệch mạnh. \\
+    Fairness gap & Khoảng cách giữa tỷ lệ reward và tỷ lệ đóng góp. & Càng gần 0 càng phản ánh đóng góp tốt. \\
+    Reward leakage & Tỷ lệ reward rơi vào client bất thường. & Thấp hơn baseline khi có attack. \\
+    False positive rate & Tỷ lệ client trung thực bị flag nhầm. & Thấp, tránh phạt sai client hợp lệ. \\
+    Attack detection rate & Tỷ lệ client bất thường bị phát hiện. & Cao trong label-noise/sign-flip; với free-rider cần kết hợp reputation. \\
+    \bottomrule
+\end{longtable}
+
+\FloatBarrier
+
+\section{Phương pháp phân tích thống kê}
+
+Với mỗi cấu hình, kết quả cần được tổng hợp theo nhiều seed. Báo cáo cuối nên trình bày trung bình $\mu$ và độ lệch chuẩn $\sigma$:
+
+\[
+    \mu_x = \frac{1}{n}\sum_{i=1}^{n}x_i,
+    \qquad
+    \sigma_x = \sqrt{\frac{1}{n-1}\sum_{i=1}^{n}(x_i-\mu_x)^2}.
+\]
+
+Khi so sánh hai cấu hình trên cùng tập seed, có thể dùng Wilcoxon signed-rank test vì từng seed tạo thành một cặp kết quả. Khi dữ liệu không ghép cặp hoặc số run giữa hai cấu hình khác nhau, dùng Mann-Whitney U test. Mức ý nghĩa được đặt là $\alpha=0.05$. Ngoài p-value, nên báo cáo thêm effect size để tránh kết luận quá mạnh từ khác biệt nhỏ.
+
+Đối với các chỉ số fairness và leakage, cần phân tích theo từng scenario thay vì chỉ lấy trung bình toàn cục. Một cấu hình có thể tốt trên IID nhưng kém trên Dirichlet Non-IID; nếu chỉ lấy trung bình toàn bộ, hiện tượng này dễ bị che khuất.
+
+\section{Kết quả chạy phân tích log}
+
+Sau khi chạy lại script \texttt{python analyze\_results.py --log-dir results/logs --out-dir results/plots --result-dir results --report --latex --smooth 3 --ci}, pipeline sinh các file \texttt{summary\_metrics.csv}, \texttt{fairness\_metrics.csv}, \texttt{stat\_tests.csv}, \texttt{analysis\_report.md}, hai bảng LaTeX trong \texttt{results/latex/} và 34 biểu đồ PNG. Các biểu đồ đã được sao chép vào thư mục \texttt{img/results/} để đưa vào báo cáo.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Tổng quan bộ log được phân tích}
+    \label{tab:log-analysis-overview}
+    \small
+    \begin{tabularx}{\textwidth}{lY}
+        \toprule
+        \textbf{Thuộc tính} & \textbf{Giá trị} \\
+        \midrule
+        Số file CSV hợp lệ & 354 file, không có file bị bỏ qua do sai schema. \\
+        Số dòng dữ liệu & 103.870 dòng client-round. \\
+        Dataset & MNIST và Fashion-MNIST. \\
+        Scenario & K1, K2, K3 Dirichlet $\alpha=0.1$ và K3 Dirichlet $\alpha=0.5$. \\
+        Cấu hình & M1--M6 theo ma trận ở Bảng \ref{tab:ablation-matrix}. \\
+        Điều kiện chạy & 162 clean runs và 192 attack runs. \\
+        Độ dài run & 344 run đủ 30 round; 10 run ngắn hơn được giữ lại nhưng cần diễn giải thận trọng. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\FloatBarrier
+
+\section{Kết quả accuracy trên clean runs}
+
+Hình \ref{fig:baseline-accuracy-curves} và Hình \ref{fig:baseline-final-accuracy} cho thấy đường cong hội tụ và accuracy cuối của các cấu hình trong điều kiện không attack. Trên các cấu hình dùng FedAvg, reward policy không làm thay đổi quá trình tổng hợp mô hình nên M1, M2, M3 và M4 có accuracy gần như trùng nhau trong cùng dataset/scenario. Khác biệt chính xuất hiện khi chuyển sang CSRA-DCD: M5 và M6 có thể giữ accuracy tương đương trên K1, K2 và K3 $\alpha=0.5$, nhưng giảm rõ trên K3 $\alpha=0.1$ do bộ lọc MAD flag nhầm một phần client trung thực.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/baseline_accuracy_curve_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/baseline_accuracy_curve_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Đường cong accuracy theo round trong clean runs}
+    \label{fig:baseline-accuracy-curves}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/baseline_final_accuracy_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/baseline_final_accuracy_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Final accuracy theo cấu hình trong clean runs}
+    \label{fig:baseline-final-accuracy}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Final accuracy trong clean runs của các cấu hình chính}
+    \label{tab:clean-final-accuracy}
+    \scriptsize
+    \begin{adjustbox}{width=\textwidth}
+    \begin{tabular}{llcccc}
+        \toprule
+        \textbf{Dataset} & \textbf{Scenario} & \textbf{M1} & \textbf{M4} & \textbf{M5} & \textbf{M6} \\
+        \midrule
+        Fashion-MNIST & K1 & 0.8769 & 0.8769 & 0.8769 & 0.8769 \\
+        Fashion-MNIST & K2 & 0.7493 & 0.7493 & 0.7493 & 0.7493 \\
+        Fashion-MNIST & K3, $\alpha=0.1$ & 0.7220 & 0.7220 & 0.6746 & 0.6746 \\
+        Fashion-MNIST & K3, $\alpha=0.5$ & 0.8567 & 0.8567 & 0.8567 & 0.8567 \\
+        MNIST & K1 & 0.9738 & 0.9742 & 0.9748 & 0.9748 \\
+        MNIST & K2 & 0.9531 & 0.9531 & 0.9531 & 0.9531 \\
+        MNIST & K3, $\alpha=0.1$ & 0.9258 & 0.9258 & 0.8747 & 0.8747 \\
+        MNIST & K3, $\alpha=0.5$ & 0.9742 & 0.9742 & 0.9733 & 0.9733 \\
+        \bottomrule
+    \end{tabular}
+    \end{adjustbox}
+\end{table}
+
+Kết quả này cho thấy CSRAReward không làm giảm accuracy khi chỉ thay reward policy trên FedAvg. Ngược lại, phần có rủi ro hơn là CSRA-DCD trong dữ liệu Dirichlet rất lệch: trên K3 $\alpha=0.1$, M5/M6 giảm khoảng 0.0474 điểm với Fashion-MNIST và 0.0511 điểm với MNIST so với M1/M4. Đây là dấu hiệu cần tinh chỉnh ngưỡng \texttt{mad-threshold} hoặc dùng thêm tín hiệu định hướng cập nhật thay vì chỉ dựa vào norm.
+
+\section{Kết quả fairness và phân phối reward}
+
+Hình \ref{fig:fairness-jain-gini} cho thấy EqualSplit đạt Jain index gần 1 và Gini gần 0 vì chia đều reward. Tuy nhiên, đây là công bằng theo nghĩa bình đẳng tuyệt đối, không nhất thiết phản ánh đúng đóng góp. DataSize và QualityOnly tạo reward phân tán mạnh hơn, đặc biệt khi data size lệch hoặc quality score biến động. CSRAReward tạo điểm cân bằng hơn: Jain thấp hơn EqualSplit nhưng cao hơn DataSize/QualityOnly, trong khi Gini và reward standard deviation giảm rõ.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_jain_gini_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_jain_gini_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Jain index và Gini coefficient theo cấu hình}
+    \label{fig:fairness-jain-gini}
+\end{figure}
+
+\begin{table}[htbp]
+    \centering
+    \caption{Trung bình fairness trên clean runs}
+    \label{tab:clean-fairness-summary}
+    \small
+    \begin{tabular}{lccccc}
+        \toprule
+        \textbf{Config} & \textbf{Final acc.} & \textbf{Jain} & \textbf{Gini} & \textbf{Fairness gap} & \textbf{Reward std.} \\
+        \midrule
+        M1 & 0.8790 & 1.0000 & 0.0000 & 0.0059 & 0.0000 \\
+        M2 & 0.8790 & 0.7308 & 0.3224 & 0.0065 & 0.0606 \\
+        M3 & 0.8790 & 0.7498 & 0.3139 & 0.0055 & 0.0573 \\
+        M4 & 0.8607 & 0.9086 & 0.1706 & 0.0044 & 0.0316 \\
+        M5 & 0.8667 & 0.9975 & 0.0067 & 0.0067 & 0.0031 \\
+        M6 & 0.8667 & 0.9270 & 0.1542 & 0.0065 & 0.0314 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+So với M2 và M3, M4 giảm reward variance khoảng một nửa và giảm Gini từ trên 0.31 xuống 0.1706. Fairness gap của M4 cũng thấp nhất trong bảng, đạt 0.0044. Điều này ủng hộ giả thuyết H1--H3 rằng reward đa chiều ổn định hơn các policy chỉ nhìn một tín hiệu. Tuy nhiên, M1/M5 vẫn có Jain cao nhất vì chia đều; do đó không nên diễn giải Jain riêng lẻ là bằng chứng đủ cho reward phản ánh đóng góp.
+
+\section{Kết quả dưới các kịch bản attack}
+
+Hình \ref{fig:attack-accuracy} và Hình \ref{fig:attack-reward-share} trình bày tác động của attack đến accuracy và reward share. Trung bình trên các attack runs, M6 đạt final accuracy 0.7140, cao hơn M1/M4 ở mức 0.6941. Lợi ích accuracy này chủ yếu đến từ sign-flip, nơi CSRA-DCD giúp final accuracy trung bình tăng từ 0.3752 lên 0.5772. Với free-rider, lazy và label-noise, bộ lọc theo update norm chưa tạo lợi ích accuracy rõ ràng.
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/attack_accuracy_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/attack_accuracy_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{So sánh accuracy giữa clean và attack runs}
+    \label{fig:attack-accuracy}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/attack_reward_share_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/attack_reward_share_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Tỷ lệ reward của honest và malicious clients trong attack runs}
+    \label{fig:attack-reward-share}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Trung bình kết quả trên attack runs}
+    \label{tab:attack-summary}
+    \small
+    \begin{tabular}{lccccc}
+        \toprule
+        \textbf{Config} & \textbf{Final acc.} & \textbf{Leakage} & \textbf{Jain} & \textbf{FPR} & \textbf{Detect rate} \\
+        \midrule
+        M1 & 0.6941 & 0.2000 & 1.0000 & 0.0000 & 0.0000 \\
+        M2 & 0.6941 & 0.1408 & 0.6398 & 0.0000 & 0.0000 \\
+        M3 & 0.6941 & 0.1705 & 0.7045 & 0.0000 & 0.0000 \\
+        M4 & 0.6941 & 0.1749 & 0.9111 & 0.0000 & 0.0000 \\
+        M5 & 0.7140 & 0.2125 & 0.9978 & 0.0958 & 0.0354 \\
+        M6 & 0.7140 & 0.1874 & 0.9061 & 0.0958 & 0.0354 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Reward leakage của M4 giảm từ 0.2000 ở M1 xuống 0.1749, cho thấy CSRAReward hạn chế một phần phần thưởng rơi vào client bất thường ngay cả khi chưa có filtering. Khi so sánh hai cấu hình có CSRA-DCD, M6 giảm leakage so với M5 từ 0.2125 xuống 0.1874. Tuy vậy, M6 chưa luôn tốt hơn M4 về leakage, vì CSRA-DCD trong bộ log hiện tại có false positive rate trung bình 0.0958 nhưng detection rate chỉ 0.0354.
+
+\begin{table}[H]
+    \centering
+    \caption{Reward leakage trung bình theo loại attack (giá trị lấy trực tiếp từ CSV log)}
+    \label{tab:attack-type-leakage}
+    \small
+    \begin{tabular}{lcccc}
+        \toprule
+        \textbf{Attack} & \textbf{M1} & \textbf{M4} & \textbf{M5} & \textbf{M6} \\
+        \midrule
+        Free-rider & 0.2000 & 0.0816 & 0.2208 & 0.0845 \\
+        Label-noise & 0.2000 & 0.1812 & 0.2253 & 0.2182 \\
+        Lazy & 0.2000 & 0.2181 & 0.2197 & 0.2477 \\
+        Sign-flip & 0.2000 & 0.2162 & 0.1194 & 0.1230 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{Final accuracy trung bình theo loại attack}
+    \label{tab:attack-type-acc}
+    \small
+    \begin{tabular}{lcccc}
+        \toprule
+        \textbf{Attack} & \textbf{M1} & \textbf{M4} & \textbf{M5} & \textbf{M6} \\
+        \midrule
+        Free-rider  & 0.7794 & 0.7794 & 0.7342 & 0.7342 \\
+        Label-noise & 0.7969 & 0.7969 & 0.7562 & 0.7562 \\
+        Lazy        & 0.8248 & 0.8248 & 0.7886 & 0.7886 \\
+        Sign-flip   & 0.3752 & 0.3752 & 0.5772 & 0.5772 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Khi tách theo loại attack, các kết luận trở nên cụ thể hơn:
+
+\begin{itemize}
+    \item \textbf{Free-rider}: CSRAReward giảm leakage từ 0.2000 (M1) xuống còn 0.0816 (M4) và 0.0845 (M6) -- mức giảm gần 60\%. Nguyên nhân là update của free-rider có quality score và data signal thấp, nên trọng số trong $r_i = \beta q_i + \gamma d_i + \delta \rho_i$ giảm rõ rệt. Đây là loại attack mà reward policy đa tín hiệu phát huy hiệu quả nhất.
+    \item \textbf{Sign-flip}: CSRA-DCD giảm leakage đáng kể nhờ filter MAD bắt được update đảo chiều: M5 còn 0.1194 và M6 còn 0.1230, trong khi M4 (không lọc) vẫn ở mức 0.2162. Đồng thời accuracy được cứu từ 0.3752 (M1) lên 0.5772 (M5/M6) -- chứng tỏ lọc bất thường có tác dụng song song với việc cắt reward.
+    \item \textbf{Label-noise}: hiệu quả khiêm tốn. Update từ client label-noise vẫn có norm hợp lệ và quality không quá thấp, nên cả CSRAReward lẫn CSRA-DCD chỉ kéo leakage xuống khoảng 0.18--0.22. Cần thêm tín hiệu phía dataset (per-class accuracy hoặc loss residual) để cải thiện.
+    \item \textbf{Lazy client}: là loại khó nhất trong bộ log hiện tại. Cả M4 (0.2181), M5 (0.2197) và M6 (0.2477) đều không thấp hơn baseline M1 (0.2000); M6 thậm chí có leakage cao hơn vì khi lọc một số honest client bị flag nhầm, phần thưởng còn lại được chia đều giữa các client còn lại, trong đó có cả lazy. Quality score của lazy không quá thấp và data size vẫn bình thường, do đó cần kết hợp lịch sử quality nhiều round hoặc đo \emph{effective effort} thay vì chỉ dùng update norm.
+\end{itemize}
+
+Detection rate trung bình toàn bộ attack ở M5/M6 là 0.0354, trong đó duy nhất sign-flip đạt 0.1375 (M5/M6 cùng chỉ số vì cùng dùng filter CSRA-DCD), còn free-rider/label-noise/lazy gần 0. FPR của CSRA-DCD theo attack lần lượt là 0.1458 (free-rider), 0.0979 (label-noise), 0.0948 (lazy) và 0.0448 (sign-flip); tức là filter dễ flag nhầm hơn khi malicious update không khác biệt rõ về norm, đúng kỳ vọng lý thuyết.
+
+\section{Phân tích phân phối reward chi tiết}
+
+Ngoài Jain/Gini tổng hợp, đề tài còn vẽ phân phối reward chi tiết bằng boxplot, histogram và biểu đồ tương quan reward--quality để kiểm chứng cảm tính bằng đồ thị.
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_boxplot_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_boxplot_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Boxplot phân phối reward theo cấu hình}
+    \label{fig:fairness-boxplot}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_histogram_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_histogram_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Histogram phân phối reward giữa các client}
+    \label{fig:fairness-histogram}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_reward_vs_quality_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/fairness_reward_vs_quality_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Quan hệ giữa reward và quality score theo cấu hình}
+    \label{fig:fairness-reward-vs-quality}
+\end{figure}
+
+Boxplot ở Hình \ref{fig:fairness-boxplot} cho thấy M1 và M5 nén toàn bộ reward về một điểm (EqualSplit), trong khi M2 và M3 có hộp giãn rộng và nhiều outlier. M4 và M6 nằm ở giữa: hộp hẹp hơn M2/M3 nhưng vẫn cho phép biến thiên hợp lý, phản ánh ý đồ thiết kế của CSRAReward. Histogram ở Hình \ref{fig:fairness-histogram} bổ sung cùng nhận định -- phân bố reward của M4/M6 tập trung quanh giá trị trung bình hơn M2/M3 rõ rệt.
+
+Biểu đồ tán xạ reward vs. quality (Hình \ref{fig:fairness-reward-vs-quality}) cho thấy CSRAReward giữ mối tương quan thuận giữa quality và reward (tăng cùng chiều) nhưng không quá dốc; ngược lại QualityOnly tạo ra một đường tuyến tính quá đậm khiến chỉ một số ít client nhận phần lớn reward. Đây là cơ chế chính khiến Gini của M3 cao hơn M4 trong các bảng tổng hợp.
+
+\section{Tiến hóa reputation qua các round}
+
+Reputation $\rho_i^{(t)}$ tích lũy theo round cho thấy tính ổn định trong dài hạn của bộ trọng số. Hình \ref{fig:reputation-avg} so sánh trung bình reputation của các cấu hình theo round, còn Hình \ref{fig:reputation-honest-vs-mal} tách rõ honest và malicious cho hai scenario quan trọng nhất (K2 và K3 Dirichlet $\alpha=0.1$).
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_avg_mnist_K2.png}
+        {\small MNIST K2}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_avg_fashion_mnist_K2.png}
+        {\small Fashion-MNIST K2}
+    \end{minipage}
+
+    \vspace{0.3em}
+
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_avg_mnist_K3_dirichlet0p1.png}
+        {\small MNIST K3 $\alpha=0.1$}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_avg_fashion_mnist_K3_dirichlet0p1.png}
+        {\small Fashion-MNIST K3 $\alpha=0.1$}
+    \end{minipage}
+    \caption{Reputation trung bình theo round trên các scenario chính}
+    \label{fig:reputation-avg}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_honest_vs_malicious_mnist_K2.png}
+        {\small MNIST K2}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_honest_vs_malicious_fashion_mnist_K2.png}
+        {\small Fashion-MNIST K2}
+    \end{minipage}
+
+    \vspace{0.3em}
+
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_honest_vs_malicious_mnist_K3_dirichlet0p1.png}
+        {\small MNIST K3 $\alpha=0.1$}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/reputation_honest_vs_malicious_fashion_mnist_K3_dirichlet0p1.png}
+        {\small Fashion-MNIST K3 $\alpha=0.1$}
+    \end{minipage}
+    \caption{Reputation honest vs.\ malicious theo round}
+    \label{fig:reputation-honest-vs-mal}
+\end{figure}
+
+Trong các log mới nhất, reputation trung bình trong toàn bộ run đo được vẫn dao động quanh giá trị khởi tạo 0.5 (mean reputation = 0.5000 ở tất cả cấu hình theo bảng tổng hợp). Điều này phản ánh \emph{trạng thái runtime} của smart contract: \texttt{ReputationManager.updateBatch} chỉ cập nhật khi tin nhắn lên chain và trong bộ log hiện tại, biên độ cập nhật/round nhỏ hơn ngưỡng làm trị trung bình lệch khỏi 0.5. Hình \ref{fig:reputation-honest-vs-mal} cho thấy chênh lệch honest--malicious tăng dần ở M5/M6 trong attack sign-flip nhờ filter cắt update đảo chiều, nhưng với free-rider/label-noise biên độ rất nhỏ. Đây là điểm cần cải thiện: nâng tốc độ cập nhật của reputation (tăng learning rate $\eta_\rho$) hoặc thêm \emph{penalty term} khi client bị flag liên tiếp.
+
+\section{Tốc độ hội tụ}
+
+Convergence round được định nghĩa là round đầu tiên đạt 95\% peak accuracy và duy trì ổn định 5 round. Hình \ref{fig:convergence-round} và Hình \ref{fig:convergence-scatter} biểu diễn convergence round trung bình theo cấu hình và phân bố theo từng run.
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/convergence_round_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/convergence_round_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Convergence round trung bình theo cấu hình}
+    \label{fig:convergence-round}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/convergence_scatter_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/convergence_scatter_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Scatter convergence round vs.\ final accuracy}
+    \label{fig:convergence-scatter}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Convergence round trung bình theo cấu hình (cộng dồn dataset/scenario)}
+    \label{tab:convergence}
+    \small
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Config} & \textbf{Clean (round)} & \textbf{Attack (round)} \\
+        \midrule
+        M1 & 7.75 & 13.00 \\
+        M2 & 7.75 & 13.00 \\
+        M3 & 7.75 & 13.00 \\
+        M4 & 9.50 & 13.00 \\
+        M5 & 8.75 & 18.25 \\
+        M6 & 8.75 & 18.25 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Trong điều kiện không attack, M1--M4 hội tụ trung bình ở round 7--10. M5/M6 hội tụ chậm hơn vài round trong clean (8.75 so với 7.75) nhưng cách biệt rõ trong attack: cần 18.25 round so với 13.00 round của M1--M4. Nguyên nhân là filter CSRA-DCD loại bỏ một phần update mỗi round, làm bước cập nhật của global model nhỏ hơn so với FedAvg thông thường. Đây là chi phí phải trả để giảm leakage; trade-off giữa tốc độ hội tụ và an toàn cần được điều chỉnh theo bài toán cụ thể (giảm tỉ lệ \texttt{trim-ratio} có thể giúp M5/M6 hội tụ nhanh hơn nhưng đánh đổi với độ bảo vệ).
+
+\section{Độ nhạy trọng số CSRAReward}
+
+Hình \ref{fig:alpha-sensitivity} trình bày sweep trọng số chất lượng trong CSRAReward trên K3 Dirichlet $\alpha=0.1$. Trong bộ log này, thay đổi $\beta$ từ 0.3 đến 0.7 không làm thay đổi final accuracy vì reward policy không tác động trực tiếp đến FedAvg aggregation. Tác động chính nằm ở phân phối reward: tăng $\beta$ làm reward nghiêng nhiều hơn về quality score, giảm fairness gap nhẹ nhưng làm Jain giảm và Gini tăng.
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/alpha_sensitivity_mnist.png}
+        {\small MNIST}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{img/results/alpha_sensitivity_fashion_mnist.png}
+        {\small Fashion-MNIST}
+    \end{minipage}
+    \caption{Độ nhạy của CSRAReward theo trọng số chất lượng}
+    \label{fig:alpha-sensitivity}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Sweep $\beta$ của M4 trên K3 Dirichlet $\alpha=0.1$}
+    \label{tab:beta-sweep}
+    \small
+    \begin{tabular}{lcccccc}
+        \toprule
+        \textbf{Dataset} & \textbf{$\beta$} & \textbf{Final acc.} & \textbf{Jain} & \textbf{Gini} & \textbf{Reward std.} & \textbf{Fairness gap} \\
+        \midrule
+        Fashion-MNIST & 0.3 & 0.7220 & 0.9256 & 0.1584 & 0.0284 & 0.0018 \\
+        Fashion-MNIST & 0.5 & 0.7220 & 0.8881 & 0.1962 & 0.0355 & 0.0014 \\
+        Fashion-MNIST & 0.7 & 0.7220 & 0.7834 & 0.2732 & 0.0527 & 0.0011 \\
+        MNIST & 0.3 & 0.9258 & 0.9517 & 0.1254 & 0.0223 & 0.0023 \\
+        MNIST & 0.5 & 0.9258 & 0.9223 & 0.1632 & 0.0288 & 0.0021 \\
+        MNIST & 0.7 & 0.9258 & 0.8291 & 0.2495 & 0.0454 & 0.0019 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Kết quả sweep gợi ý $\beta=0.5$ là điểm cân bằng hợp lý hơn $\beta=0.7$: reward vẫn phản ánh quality tốt hơn DataSize nhưng không làm phân phối quá tập trung. Nếu mục tiêu là tối đa hóa fairness gap, có thể tăng $\beta$; nếu mục tiêu là giữ reward ổn định giữa các client trung thực, nên ưu tiên $\beta=0.3$ hoặc $\beta=0.5$.
+
+\section{Kiểm định thống kê và nhận xét tổng hợp}
+
+Kiểm định Mann-Whitney U trên final accuracy giữa các cặp cấu hình không tìm thấy khác biệt có ý nghĩa thống kê ở mức $p<0.05$. Kết quả này phù hợp với thiết kế ablation: trong cùng aggregation FedAvg, thay đổi reward policy không tác động trực tiếp đến update mô hình, nên accuracy của M1--M4 thường giống nhau. Các khác biệt đáng chú ý hơn nằm ở fairness, reward leakage, false positive và detection rate.
+
+Từ các bảng và biểu đồ, có thể rút ra các nhận xét chính, đối chiếu trực tiếp với năm giả thuyết H1--H5 ở Bảng \ref{tab:hypotheses}:
+
+\begin{itemize}
+    \item \textbf{H1 -- Fairness (xác nhận):} CSRAReward (M4) có Jain $=0.9086$ và Gini $=0.1706$, tốt hơn rõ so với DataSize (M2: Jain $=0.7308$, Gini $=0.3224$) và QualityOnly (M3: Jain $=0.7498$, Gini $=0.3139$). Fairness gap M4 đạt 0.0044 -- nhỏ nhất trong sáu cấu hình. Đồng nghĩa: reward đa tín hiệu phản ánh đóng góp tốt hơn baseline đơn tín hiệu.
+    \item \textbf{H2 -- Giảm bias theo data size (xác nhận):} Reward variance M2 = 0.0606, M4 = 0.0316 (giảm gần một nửa) và Gini giảm từ 0.3224 xuống 0.1706. Tức CSRAReward không chỉ phụ thuộc vào data size mà có cân bằng cùng quality và reputation.
+    \item \textbf{H3 -- Ổn định hơn QualityOnly (xác nhận):} M4 có reward variance 0.0316 vs M3 0.0573, và Gini M4 0.1706 vs M3 0.3139. Tác động rõ nhất ở K3 Dirichlet $\alpha=0.1$ -- nơi quality score biến động mạnh do dữ liệu lệch.
+    \item \textbf{H4 -- Giảm leakage khi có attack (xác nhận với điều kiện):} M5 vs M1 chưa giảm leakage trung bình toàn bộ (0.2125 vs 0.2000), nhưng khi tách theo loại attack, M5 giảm rõ ở sign-flip (0.1194 vs 0.2000). Cấu hình kết hợp M6 hiệu quả hơn: leakage 0.1874 vs M1 0.2000, và đặc biệt 0.0845 vs 0.2000 ở free-rider.
+    \item \textbf{H5 -- Cân bằng tổng thể (chưa thuyết phục tuyệt đối):} M6 thắng M4 ở free-rider/sign-flip và thắng M5 ở fairness, nhưng thua M4 ở lazy/label-noise và phải trả giá bằng convergence chậm hơn (18.25 vs 13.00 round trong attack). Kết luận an toàn: M6 là cấu hình tốt nhất khi attack chủ đạo là free-rider hoặc sign-flip; trong tình huống lazy/label-noise, M4 vẫn cạnh tranh.
+\end{itemize}
+
+Ngoài năm giả thuyết, các quan sát phụ:
+
+\begin{itemize}
+    \item \textbf{Trade-off accuracy vs.\ filtering:} M5/M6 mất 0.0474--0.0511 accuracy trên K3 Dirichlet $\alpha=0.1$ clean và hội tụ chậm hơn vài round trong clean. Đây là chi phí phải trả cho khả năng lọc; giảm \texttt{trim-ratio} hoặc tăng ngưỡng MAD có thể cải thiện.
+    \item \textbf{Reputation chưa phát huy hết:} Trong bộ log hiện tại reputation trung bình giữ ở 0.5; cần tăng learning rate $\eta_\rho$ hoặc thêm penalty khi client bị flag liên tiếp để reputation phân tách honest/malicious nhanh hơn.
+    \item \textbf{Lazy/label-noise là điểm yếu:} cần thêm tín hiệu ngoài update norm, ví dụ cosine similarity với global update, per-class accuracy hoặc lịch sử quality qua nhiều round.
+    \item \textbf{Kiểm định Mann-Whitney:} không tìm thấy khác biệt $p<0.05$ giữa các cấu hình về final accuracy. Phù hợp lý thuyết: thay reward policy không tác động trực tiếp đến aggregation, nên accuracy gần như đồng nhất trong M1--M4. Khác biệt chỉ xuất hiện khi đổi aggregation (M5/M6) hoặc tách theo loại attack.
+    \item \textbf{Phạm vi áp dụng:} kết luận định lượng hiện chỉ cho MNIST và Fashion-MNIST trong 354 run thực nghiệm. CIFAR-10 cần chạy thêm trước khi tổng quát hóa cho mô hình ảnh màu phức tạp.
+\end{itemize}
+
+đánh giá phần trình bày thực nghiệm đánh giá này chon tôi
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-26T01:00:38+07:00.
+</ADDITIONAL_METADATA>

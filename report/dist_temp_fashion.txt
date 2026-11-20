@@ -1,0 +1,45 @@
+## 3. Phân phối Nhãn dữ liệu (Dataset Fashion-MNIST)
+Dưới đây là thống kê chi tiết cho **Fashion-MNIST** (60,000 mẫu train, 10 class). Quá trình phân chia chia sẻ cùng thuật toán và seed=42, nhưng do đặc thù thứ tự dữ liệu gốc, phân bố nhãn sẽ có đôi chút khác biệt so với MNIST.
+
+| Kịch bản | Client ID | Tổng mẫu | Số class | Phân bố mẫu theo Class (Top 3) |
+|---|---|---|---|---|
+| **K1 (IID)** | Client 0 | 6000 | 10 | Class 9: 624, Class 1: 614, Class 2: 610 |
+| **K1 (IID)** | Client 1 | 6000 | 10 | Class 9: 640, Class 6: 627, Class 5: 622 |
+| **K1 (IID)** | Client 2 | 6000 | 10 | Class 0: 623, Class 5: 621, Class 7: 617 |
+| **K1 (IID)** | Client 3 | 6000 | 10 | Class 2: 639, Class 0: 636, Class 1: 623 |
+| **K1 (IID)** | Client 4 | 6000 | 10 | Class 1: 623, Class 6: 623, Class 9: 618 |
+| **K1 (IID)** | Client 5 | 6000 | 10 | Class 6: 651, Class 3: 639, Class 2: 624 |
+| **K1 (IID)** | Client 6 | 6000 | 10 | Class 8: 646, Class 1: 636, Class 0: 615 |
+| **K1 (IID)** | Client 7 | 6000 | 10 | Class 4: 655, Class 6: 610, Class 0: 610 |
+| **K1 (IID)** | Client 8 | 6000 | 10 | Class 4: 641, Class 8: 610, Class 5: 609 |
+| **K1 (IID)** | Client 9 | 6000 | 10 | Class 3: 649, Class 6: 622, Class 7: 613 |
+| **K2 (Weak Non-IID)** | Client 0 | 3000 | 5 | Class 0: 600, Class 1: 600, Class 2: 600 |
+| **K2 (Weak Non-IID)** | Client 1 | 3000 | 5 | Class 6: 600, Class 7: 600, Class 9: 600 |
+| **K2 (Weak Non-IID)** | Client 2 | 3000 | 5 | Class 0: 600, Class 3: 600, Class 2: 600 |
+| **K2 (Weak Non-IID)** | Client 3 | 3000 | 5 | Class 5: 600, Class 6: 600, Class 7: 600 |
+| **K2 (Weak Non-IID)** | Client 4 | 3000 | 5 | Class 1: 600, Class 2: 600, Class 4: 600 |
+| **K2 (Weak Non-IID)** | Client 5 | 3000 | 5 | Class 7: 600, Class 8: 600, Class 0: 600 |
+| **K2 (Weak Non-IID)** | Client 6 | 3000 | 5 | Class 0: 600, Class 1: 600, Class 2: 600 |
+| **K2 (Weak Non-IID)** | Client 7 | 3000 | 5 | Class 5: 600, Class 6: 600, Class 8: 600 |
+| **K2 (Weak Non-IID)** | Client 8 | 3000 | 5 | Class 0: 600, Class 3: 600, Class 2: 600 |
+| **K2 (Weak Non-IID)** | Client 9 | 3000 | 5 | Class 5: 600, Class 6: 600, Class 7: 600 |
+| **K3 (Dirichlet a=0.5)** | Client 0 | 11815 | 10 | Class 3: 2363, Class 6: 2105, Class 9: 1685 |
+| **K3 (Dirichlet a=0.5)** | Client 1 | 1816 | 10 | Class 1: 705, Class 6: 565, Class 3: 245 |
+| **K3 (Dirichlet a=0.5)** | Client 2 | 4016 | 9 | Class 8: 1652, Class 6: 1348, Class 7: 501 |
+| **K3 (Dirichlet a=0.5)** | Client 3 | 6621 | 9 | Class 1: 2698, Class 9: 1580, Class 7: 1042 |
+| **K3 (Dirichlet a=0.5)** | Client 4 | 9072 | 10 | Class 3: 2406, Class 5: 2299, Class 9: 1301 |
+| **K3 (Dirichlet a=0.5)** | Client 5 | 10960 | 10 | Class 7: 2932, Class 2: 2762, Class 4: 1165 |
+| **K3 (Dirichlet a=0.5)** | Client 6 | 2545 | 10 | Class 5: 816, Class 4: 629, Class 1: 402 |
+| **K3 (Dirichlet a=0.5)** | Client 7 | 3244 | 10 | Class 4: 1096, Class 7: 679, Class 2: 431 |
+| **K3 (Dirichlet a=0.5)** | Client 8 | 3669 | 10 | Class 0: 2063, Class 5: 467, Class 2: 311 |
+| **K3 (Dirichlet a=0.5)** | Client 9 | 6242 | 10 | Class 8: 2239, Class 2: 1385, Class 6: 851 |
+| **K3 (Dirichlet a=0.1)** | Client 0 | 6541 | 8 | Class 3: 2857, Class 4: 2409, Class 8: 985 |
+| **K3 (Dirichlet a=0.1)** | Client 1 | 13622 | 7 | Class 0: 4646, Class 1: 4279, Class 8: 4109 |
+| **K3 (Dirichlet a=0.1)** | Client 2 | 4625 | 4 | Class 6: 4423, Class 1: 200, Class 4: 1 |
+| **K3 (Dirichlet a=0.1)** | Client 3 | 1448 | 6 | Class 7: 919, Class 4: 197, Class 0: 175 |
+| **K3 (Dirichlet a=0.1)** | Client 4 | 8584 | 7 | Class 5: 3853, Class 3: 2949, Class 6: 1012 |
+| **K3 (Dirichlet a=0.1)** | Client 5 | 9972 | 7 | Class 2: 5536, Class 4: 1472, Class 1: 1438 |
+| **K3 (Dirichlet a=0.1)** | Client 6 | 2439 | 5 | Class 8: 791, Class 0: 690, Class 5: 639 |
+| **K3 (Dirichlet a=0.1)** | Client 7 | 2011 | 8 | Class 4: 1297, Class 0: 484, Class 9: 206 |
+| **K3 (Dirichlet a=0.1)** | Client 8 | 5875 | 6 | Class 9: 5781, Class 5: 64, Class 2: 20 |
+| **K3 (Dirichlet a=0.1)** | Client 9 | 4883 | 10 | Class 7: 4734, Class 5: 135, Class 2: 4 |

@@ -324,6 +324,44 @@ def test_unified_strategy_uses_server_known_size_and_logs_mismatch(tmp_path):
     assert rows[0]["reward_component_reputation"] == 0.0
 
 
+def test_unified_strategy_uses_server_known_size_for_aggregation_weights(tmp_path):
+    logger = ExperimentLogger("unified-server-known-aggregation-weight", str(tmp_path))
+    cfg = ProjectConfig(
+        fl=FLConfig(n_clients=2),
+        experiment=ExperimentConfig(dataset="mnist", scenario="K1"),
+    )
+    strategy = FLUnifiedStrategy(
+        aggregation_method="fedavg",
+        reward_policy="equal",
+        cfg=cfg,
+        exp_logger=logger,
+        client_types={0: "honest", 1: "stealth_free_rider"},
+        mean_data_size=10,
+        server_data_sizes={0: 10, 1: 10},
+        seed=42,
+        bridge=None,
+        min_fit_clients=2,
+        min_evaluate_clients=2,
+        min_available_clients=2,
+        initial_parameters=ndarrays_to_parameters([np.array([0.0], dtype=np.float32)]),
+    )
+
+    try:
+        aggregated, _ = strategy.aggregate_fit(
+            1,
+            [
+                (SimpleNamespace(cid="0"), _fit_res(0.0, 0.0, data_size=10, num_examples=10)),
+                (SimpleNamespace(cid="1"), _fit_res(10.0, 0.0, data_size=10, num_examples=1000)),
+            ],
+            [],
+        )
+    finally:
+        logger.close()
+
+    params = parameters_to_ndarrays(aggregated)
+    assert np.isclose(params[0][0], 5.0)
+
+
 def test_unified_strategy_logs_quality_policy_reward_components(tmp_path):
     logger = ExperimentLogger("unified-quality-components", str(tmp_path))
     cfg = ProjectConfig(

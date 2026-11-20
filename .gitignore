@@ -1,5 +1,7 @@
 # Python
 .venv/
+venv/
+env/
 __pycache__/
 **/__pycache__/
 .pytest_cache/
@@ -15,6 +17,8 @@ cache/
 artifacts/
 ignition/
 typechain-types/
+coverage/
+coverage.json
 
 # Environment
 .env
@@ -22,26 +26,36 @@ typechain-types/
 
 # Data & Results
 data/
-results/logs/**
-results/logs/*.csv
-results/logs/**/*.csv
-results/logs/**/*.log
-!results/logs/.gitkeep
+results/**/*
+!results/**/.gitkeep
+results_legacy/
 
-results/plots/**
-results/plots/*.png
-results/plots/**/*.png
-results/plots/**/*.pdf
-!results/plots/.gitkeep
-
-results/latex/*.tex
-results/*.csv
-results/*.md
-results/smoke*/
-results/logs_legacy/
-results/check_before/
-
-# Runtime config
-fl/contract_addresses.json
+# Reports & Temp
+*.docx
+~$*.docx
+*.pkl
+*.pdf
+*.zip
+*.tar.gz
 *.log
+*.csv
+*.png
+*.tex
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.brf
+*.fls
+*.out
+*.toc
+*.fdb_latexmk
+*.synctex.gz
+
+# IDEs & OS
+.vscode/
+.idea/
 .DS_Store
+*.swp
+

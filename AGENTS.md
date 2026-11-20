@@ -1,5 +1,7 @@
-# Agent.md — FL-Blockchain Reward Distribution
-mỗi lần trả lời nhớ kèm theo Snow đẹp trai
+# AGENTS.md — FL-Blockchain Reward Distribution
+
+Mỗi lần trả lời phải kèm cụm từ `Snow đẹp trai`.
+
 ## 0. Vai trò của Agent
 
 Bạn là Agent kỹ thuật phụ trách phân tích, chỉnh sửa, kiểm thử và mở rộng dự án **FL-Blockchain Reward Distribution**.
@@ -7,7 +9,9 @@ Bạn là Agent kỹ thuật phụ trách phân tích, chỉnh sửa, kiểm th�
 Dự án kết hợp:
 
 - **Federated Learning (FL)** bằng Flower Framework.
-- **Aggregation Methods**: FedAvg, Trimmed Mean, CSRA-DCD.
+- **Aggregation Methods**: FedAvg, Trimmed Mean, CSRA-DCD; FedLAW hiện có trong
+  code nhưng chỉ được xem là nhánh thực nghiệm ngoài ma trận M1–M6 cho đến khi
+  `docs/PLAN.md` quy định khác.
 - **Reward Policies**: equal, data, quality, csra.
 - **Blockchain Audit Layer** bằng Solidity + Hardhat.
 - **Experimental Analysis** bằng CSV/logs/plots/metrics.
@@ -19,6 +23,19 @@ Mục tiêu của Agent không phải là “viết code cho chạy được b�
 3. Không làm sai logic nghiên cứu.
 4. Không bịa kết quả thực nghiệm.
 5. Đảm bảo mọi thay đổi có thể tái lập, kiểm thử và giải thích được.
+
+### 0.1. Phạm vi và nguồn sự thật
+
+File này đặt ở root nên áp dụng cho toàn bộ repository. Khi tài liệu và code
+không đồng nhất, Agent phải dừng việc suy diễn và đối chiếu theo thứ tự:
+
+1. Invariant nghiên cứu và an toàn trong `AGENTS.md`.
+2. Thiết kế thí nghiệm đã chốt trong `docs/PLAN.md`.
+3. Giao diện sử dụng hiện hành trong `README.md`.
+4. Code, test và CSV schema đang chạy thực tế.
+
+Nếu code khác tài liệu, không âm thầm chọn một bên. Phải ghi nhận chênh lệch,
+xác định tác động và cập nhật tài liệu cùng thay đổi code khi được phép.
 
 ---
 
@@ -93,80 +110,95 @@ Vấn đề cần giải quyết:
 ### 2.2. Các thành phần chính
 
 ```text
-Client local training
+experiments/run_all.sh
+        ↓ gọi
+experiments/run_experiment.py
+        ↓ tạo data/client/strategy
+fl/data_utils.py + fl/client_attacks.py
         ↓
-Client update + contribution metrics
+fl/simulation_local.py
         ↓
-CSRA-DCD anomaly detection
-        ↓
-Valid client set
-        ↓
-Aggregation
-        ↓
-Reward calculation
-        ↓
-Blockchain audit + payout
-        ↓
-CSV logs + analysis metrics
+fl/server_base.py::FLUnifiedStrategy
+        ├── fl/aggregation_methods.py
+        ├── fl/reward_policies.py
+        ├── fl/reputation_simulator.py hoặc fl/blockchain.py
+        └── fl/logger.py → results/logs/*.csv (schema v2)
+                              ↓
+        analyze_results.py + analysis/{loader,stats,plots,report}.py
 ```
+
+Các file `fl/server.py`, `fl/server_csra.py`, `fl/server_trimmed.py`,
+`fl/client.py` và `fl/client_csra.py` là legacy. Không dùng chúng làm entrypoint
+cho experiment schema v2 và không mở rộng chúng nếu yêu cầu không nói rõ về
+tương thích legacy.
 
 ### 2.3. Luồng một round FL
 
-Một round chuẩn gồm:
+Một round schema v2 hiện tại gồm:
 
 1. Server gửi global model cho clients.
 2. Clients huấn luyện local.
-3. Clients gửi lại model update và metadata đóng góp.
-4. Server kiểm tra update bất thường bằng CSRA-DCD.
-5. Server loại client không hợp lệ khỏi aggregation/reward.
-6. Server aggregate model từ valid clients.
-7. Server tính reward theo reward policy.
-8. Server ghi nhận contribution/reputation lên blockchain.
-9. Smart contract phân phối ETH.
-10. Hệ thống ghi log CSV để phân tích.
+3. Clients gửi parameters và metadata; server tự tính update features từ
+   parameters nhận được, không tin tuyệt đối score client tự báo.
+4. `aggregation_method` được dispatch độc lập. Chỉ `csra_dcd` sinh detection
+   mask; FedAvg/Trimmed/FedLAW không được giả vờ có detector nếu code không chạy
+   detector.
+5. Hard-filter xác định client tham gia aggregation. Reward quarantine,
+   data-mismatch và reputation gate xác định tập `reward_eligible` riêng.
+6. Server aggregate model từ tập hợp hợp lệ theo đúng semantic của method.
+7. Contribution được ghi on-chain nếu bridge bật; nếu không, reputation dùng
+   simulator off-chain.
+8. Reward policy chỉ chạy trên `reward_eligible`; mọi client khác nhận 0.
+9. Blockchain tùy chọn audit/payout reward đã tính off-chain.
+10. Logger ghi một dòng mỗi client mỗi round; global metrics được bổ sung sau
+    `aggregate_evaluate`.
+
+Không đồng nhất ba khái niệm sau:
+
+- `ground_truth_honest`: nhãn kịch bản dùng để đánh giá detector.
+- `reward_eligible`: quyết định vận hành về quyền nhận reward.
+- `is_honest`: alias legacy của `reward_eligible`, không phải ground truth.
 
 ---
 
-## 3. Cấu trúc thư mục kỳ vọng
+## 3. Cấu trúc thư mục thực tế và ownership
 
-Agent phải kiểm tra cấu trúc thực tế trước khi sửa.
+Agent phải kiểm tra lại cấu trúc này trước mỗi thay đổi vì repository có thể
+tiếp tục tiến hóa. Không tự ý chuyển sang layout package lồng thư mục.
 
 ```text
 fl/
-  aggregation/
-  reward/
-  blockchain/
-  datasets/
-  clients/
-  server/
-  utils/
-
-contracts/
-  *.sol
+  config.py                Dataclass config dùng trong runtime
+  data_utils.py            Dataset, partition K1/K2/K3, data imbalance
+  models.py                Model theo dataset
+  client_attacks.py        Client factory và hành vi honest/attack schema v2
+  simulation_local.py      Sequential Flower-like simulation
+  server_base.py           Strategy hợp nhất, orchestration một round
+  aggregation_methods.py   FedAvg/Trimmed/CSRA-DCD/FedLAW thuần
+  reward_policies.py       equal/data/quality/csra thuần
+  normalization.py         Chuẩn hóa score
+  reputation_simulator.py  Reputation fallback khi không có blockchain
+  blockchain.py            Web3 bridge, audit/payout tùy chọn
+  logger.py                CSV schema v2 và run ID
 
 experiments/
-  run_*.py
-  configs/
+  run_experiment.py        Entrypoint Python duy nhất cho schema v2
+  run_all.sh               Launcher smoke/quick/full và resume
 
-analysis/
-  *.py
-  notebooks/
-
-results/
-  csv/
-  plots/
-  reports/
-
-test/
-  hoặc tests/
-
-hardhat.config.*
-package.json
-requirements.txt hoặc pyproject.toml
-README.md
+contracts/                 ContributionStore, RewardDistributor, FLRegistry
+analysis/                  Loader, metric/statistics, plot, report
+analyze_results.py         Entrypoint phân tích
+tests/unit/                Unit và strategy-flow tests
+tests/integration/         Bridge/integration tests; có thể cần Hardhat node
+tests/contracts/           Hardhat contract tests
+results/logs/              CSV thực nghiệm; không phải source code
+docs/PLAN.md               Contract thiết kế và ma trận M1–M6
+README.md                  Giao diện chạy hiện hành
 ```
 
-Nếu cấu trúc thực tế khác, không tự ý đổi toàn bộ. Chỉ đề xuất refactor nếu thật sự cần.
+Các script ad-hoc ở root, `scripts/`, `notebooks/`, `report/` và artifact sinh ra
+không mặc nhiên là source of truth. Trước khi sửa phải tìm caller/test/chứng cứ
+cho thấy chúng còn thuộc workflow hiện hành.
 
 ---
 
@@ -177,6 +209,7 @@ Nếu cấu trúc thực tế khác, không tự ý đổi toàn bộ. Chỉ đ�
 Agent phải thực hiện checklist:
 
 ```text
+[ ] Chạy git status; nhận diện file người dùng đang sửa và artifact đã xóa/tạo.
 [ ] Đọc README hoặc tài liệu mô tả.
 [ ] Xác định entrypoint chạy thí nghiệm.
 [ ] Xác định config chính.
@@ -186,6 +219,8 @@ Agent phải thực hiện checklist:
 [ ] Xác định nơi gọi smart contract.
 [ ] Xác định format CSV/log.
 [ ] Xác định test hiện có.
+[ ] Phân biệt module schema v2 với module legacy.
+[ ] Xác định thay đổi có làm lệch docs/PLAN.md hoặc ma trận M1–M6 không.
 ```
 
 ### 4.2. Khi gặp bug
@@ -315,7 +350,19 @@ Cần tránh:
 - Loại quá nhiều client honest trong Non-IID mạnh.
 - Dùng accuracy test global để quyết định trực tiếp client nào bất thường nếu không có thiết kế rõ.
 
-### 6.4. Invariant của aggregation
+### 6.4. FedLAW
+
+`fedlaw` tồn tại trong `fl/aggregation_methods.py` và runner dưới dạng protocol
+hai phase có state. Nó chưa thuộc ma trận M1–M6 mặc định trong `docs/PLAN.md`.
+
+Khi sửa FedLAW phải kiểm tra riêng:
+
+- Trial/final round không bị đảo và state được reset đúng.
+- Trial round không phát reward nếu semantic hiện hành quy định như vậy.
+- `alpha_law`, `beta_law`, `sparsity_s`, `capping_t` được log đầy đủ.
+- Không đưa kết quả FedLAW vào claim M1–M6 nếu chưa cập nhật protocol và analysis.
+
+### 6.5. Invariant của aggregation
 
 Mọi aggregation method phải đảm bảo:
 
@@ -344,9 +391,11 @@ Hệ thống có 4 policy:
 
 ### 7.2. Nguyên tắc chung
 
-Reward chỉ chia cho valid clients sau anomaly detection.
+Reward chỉ chia cho `reward_eligible`. Với CSRA-DCD, tập này là client qua
+hard-filter và các reward gate; với method không chạy detector, không được gắn
+nhãn detection giả để hợp thức hóa việc loại client.
 
-Client invalid phải:
+Client không đủ điều kiện phải:
 
 ```text
 reward = 0
@@ -370,19 +419,19 @@ data_score_i
 reputation_score_i
 ```
 
-Công thức tổng quát:
+Công thức schema v2 đang dùng:
 
 ```text
-score_i = alpha * quality_score_i
-        + beta  * data_score_i
-        + gamma * reputation_score_i
+score_i = beta  * quality_score_i
+        + gamma * data_score_i
+        + delta * reputation_score_i
 ```
 
 Điều kiện:
 
 ```text
-alpha + beta + gamma = 1
-alpha, beta, gamma >= 0
+beta + gamma + delta = 1
+beta, gamma, delta >= 0
 ```
 
 Reward:
@@ -420,7 +469,7 @@ Cần dùng một trong các cách:
 [ ] Policy equal không phụ thuộc data size.
 [ ] Policy data không phụ thuộc quality.
 [ ] Policy quality không phụ thuộc reputation nếu không được thiết kế.
-[ ] Policy csra dùng đúng alpha/beta/gamma.
+[ ] Policy csra dùng đúng beta/gamma/delta.
 [ ] Có log đầy đủ score từng thành phần.
 ```
 
@@ -618,35 +667,50 @@ payout_total
 contract_balance_before/after
 ```
 
+Các metric blockchain chỉ bắt buộc khi báo cáo có claim về blockchain. CSV
+schema v2 hiện chưa lưu `tx_hash`/`gas_used`; muốn đưa hai metric này vào kết
+quả phải mở rộng đồng bộ bridge, logger, loader, analysis và test trước khi chạy.
+
 ### 10.4. CSV log bắt buộc
 
-Mỗi round nên log tối thiểu:
+Mỗi client mỗi round của schema v2 phải giữ tối thiểu các nhóm field sau (tên
+field phải khớp `fl/logger.py::FIELDS`):
 
 ```text
 run_id
-seed
-round
 dataset
-split_type
+scenario
 dirichlet_alpha
-num_clients
-client_id
-client_type
-num_samples
-quality_score
-data_score
-reputation_score
-final_score
-reward
-is_valid
-detection_reason
 aggregation_method
 reward_policy
+beta, gamma, delta
+attack_type
+seed
+num_clients, num_rounds, local_epochs, batch_size, learning_rate
+round
+client_id
+client_type
+ground_truth_honest
+quality_score
+data_size, reported_data_size, server_known_data_size
+reputation
+reward_eth
+reward_blocked
+reward_eligible
+is_honest
+reward_component_quality
+reward_component_data
+reward_component_reputation
+is_anomaly
+detection_reason
+robust_z
 global_accuracy
 global_loss
-tx_hash nếu có
-gas_used nếu có
 ```
+
+Các detector signal chi tiết và FedLAW signal phải giữ theo `FIELDS` khi feature
+tương ứng được dùng. Đổi tên/xóa field là schema migration và phải cập nhật
+logger, loader, stats, plots, report, fixture/test cùng lúc.
 
 ---
 
@@ -763,9 +827,9 @@ split_type
 dirichlet_alpha
 aggregation_method
 reward_policy
-alpha
 beta
 gamma
+delta
 mad_threshold
 reward_pool
 attack_type
@@ -838,6 +902,27 @@ attack injection
 
 ## 14. Quy trình làm việc bắt buộc của Agent
 
+### 14.0. Quy trình mặc định cho mọi task
+
+Mọi task phải đi qua các pha sau, với mức độ kiểm tra tỷ lệ thuận rủi ro:
+
+```text
+Scope → Inspect → Trace → Change → Validate → Report
+```
+
+1. **Scope**: chốt yêu cầu, tầng bị tác động và điều kiện không được đổi.
+2. **Inspect**: xem `git status`, đọc file nguồn và test liên quan; không ghi đè
+   thay đổi chưa commit của người dùng.
+3. **Trace**: theo dữ liệu từ CLI/config đến CSV/contract/analysis; không chỉ đọc
+   function đang lỗi rồi sửa cô lập.
+4. **Change**: sửa nhỏ nhất có thể; giữ aggregation và reward độc lập.
+5. **Validate**: chạy test hẹp trước, sau đó test rộng tương ứng với tác động.
+6. **Report**: nêu lệnh thật, kết quả thật, research impact và rủi ro còn lại.
+
+Không xóa, di chuyển hoặc tái sinh hàng loạt `results/`, report hay plot chỉ để
+làm sạch worktree. Artifact thực nghiệm có thể là dữ liệu nghiên cứu của người
+dùng dù đang untracked hoặc đã bị xóa cục bộ.
+
 ### 14.1. Khi được giao phân tích hệ thống
 
 Thực hiện theo thứ tự:
@@ -881,6 +966,22 @@ Cách sửa:
 Test đã chạy:
 Rủi ro còn lại:
 ```
+
+### 14.4. Validation theo phạm vi thay đổi
+
+| Phạm vi | Kiểm tra tối thiểu |
+|---|---|
+| Reward/normalization | `test_reward_policies.py`, `test_normalization.py`, tổng pool, invalid = 0 |
+| Aggregation/detection | test aggregation + CSRA flow, shape/dtype, NaN/Inf, Non-IID false positive |
+| Strategy/round flow | `test_csra_strategy_flow.py`, logger test, smoke không blockchain nếu hợp lý |
+| Data/client attack | data split/imbalance/client behavior tests, seed determinism |
+| CSV/analysis | logger + loader + stats/report/plot tests; kiểm tra backward compatibility có chủ đích |
+| Solidity/bridge | Hardhat compile/test + bridge unit/integration; node local nếu test cần |
+| CLI/launcher/config | `--help`, compileall, dry-run launcher; không chạy full matrix để smoke test |
+
+Nếu thay đổi thuật toán hoặc detector, unit test chỉ chứng minh implementation
+đúng theo thiết kế; nó không chứng minh claim nghiên cứu. Claim phải được xác
+nhận bằng experiment nhiều seed với log thật.
 
 ---
 
@@ -962,19 +1063,32 @@ nếu chưa thật sự chạy test.
 
 Agent phải ưu tiên dùng lệnh có sẵn trong project. Nếu chưa biết, tìm trong README/package/config.
 
-Các lệnh thường gặp:
+Các lệnh chuẩn của repository hiện tại:
 
 ```bash
-python -m pytest
-pytest
-python experiments/run_experiment.py
-python analysis/analyze_results.py
+python -m compileall fl experiments analysis tests -q
+python -m pytest tests/unit -q
+python -m pytest tests/integration -q
+npm run compile
 npm test
-npx hardhat test
-npx hardhat compile
+python -m experiments.run_experiment --help
+bash experiments/run_all.sh --smoke --dry-run
+python analyze_results.py --help
 ```
 
-Nếu môi trường thiếu dependency, báo rõ dependency nào thiếu.
+`tests/integration` có thể skip hoặc cần Hardhat node. Khi cần full blockchain
+flow, chạy node/deploy/fund theo README trước rồi mới kết luận về integration.
+
+Trên PowerShell thuần, `experiments/run_all.sh` cần Git Bash hoặc WSL. Nếu môi
+trường không có Bash, chỉ báo giới hạn hoặc dùng `--help` của Python runner;
+không tự chuyển launcher sang PowerShell trong một task không liên quan.
+
+CLI chứa tiếng Việt có thể lỗi với console CP1252 trên Windows. Khi đó dùng
+`$env:PYTHONUTF8='1'` trước lệnh Python (hoặc một terminal UTF-8); không chẩn
+đoán nhầm `UnicodeEncodeError` lúc in help thành lỗi thuật toán.
+
+Nếu môi trường thiếu dependency, báo rõ dependency nào thiếu. Không chạy full
+experiment matrix chỉ để validate thay đổi code thông thường.
 
 ---
 
@@ -992,6 +1106,8 @@ Một thay đổi chỉ được xem là hoàn thành khi:
 [ ] Không làm sai invariant smart contract.
 [ ] Kết quả thực nghiệm nếu có được trích từ log thật.
 [ ] Có báo cáo thay đổi rõ ràng.
+[ ] Không ghi đè thay đổi chưa commit hoặc artifact nghiên cứu của người dùng.
+[ ] Tài liệu, CLI, logger và analysis không mâu thuẫn với code vừa đổi.
 ```
 
 ---

@@ -16,7 +16,7 @@ Reference: docs/PLAN.md §7.5.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 
 import flwr as fl
 import numpy as np
@@ -33,6 +33,7 @@ from flwr.server.client_proxy import ClientProxy
 
 from fl.aggregation_methods import apply_aggregation, compute_update_features
 from fl.blockchain import BlockchainBridge
+from fl.reputation_simulator import OffChainReputation
 from fl.config import ProjectConfig
 from fl.logger import ExperimentLogger
 from fl.normalization import hybrid_normalize
@@ -100,6 +101,9 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
         delta: float = 0.2,
         # Blockchain (optional)
         bridge: Optional[BlockchainBridge] = None,
+        # Server-side validation
+        validation_fn: Optional[Callable[[List[np.ndarray]], float]] = None,
+        val_epsilon: float = 0.005,
         # FedAvg base kwargs (min_fit_clients, ...)
         **fedavg_kwargs,
     ):
@@ -145,7 +149,10 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
             for cid, size in (server_data_sizes or {}).items()
         }
         self.bridge = bridge
+        self.rep_sim = OffChainReputation() if self.bridge is None else None
         self.seed = int(seed)
+        self.validation_fn = validation_fn
+        self.val_epsilon = float(val_epsilon)
         self.attack_type = attack_type
 
         # FedLAW state
@@ -478,7 +485,7 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
                 self._fedlaw_G_k = None
                 self._fedlaw_base_params = None
 
-        elif self.aggregation_method == "csra_dcd":
+        elif self.aggregation_method in ("csra_dcd", "csra_soft"):
             agg_kwargs["anomaly_scores"] = [d["anomaly_score"] for d in client_data]
             if all(d["cosine_to_reference"] is not None for d in client_data):
                 agg_kwargs["update_cosines"] = [
@@ -487,13 +494,18 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
             agg_kwargs["mad_threshold"] = self.mad_threshold
             agg_kwargs["cosine_threshold"] = self.cosine_threshold
             agg_kwargs["direction_min_norm_z"] = self.direction_min_norm_z
-            agg_kwargs["min_honest_ratio"] = self.min_honest_ratio
-            agg_kwargs["fallback_hard_z"] = self.fallback_hard_z
+            if self.aggregation_method == "csra_dcd":
+                agg_kwargs["min_honest_ratio"] = self.min_honest_ratio
+                agg_kwargs["fallback_hard_z"] = self.fallback_hard_z
+            
             aggregated_ndarrays, agg_meta = apply_aggregation(
                 self.aggregation_method,
                 [d["params"] for d in client_data],
                 **agg_kwargs,
             )
+            
+            if agg_meta.get("fallback_all_blocked") and self._current_global_ndarrays is not None:
+                aggregated_ndarrays = self._current_global_ndarrays
         elif self.aggregation_method == "trimmed":
             agg_kwargs["trim_ratio"] = self.trim_ratio
             aggregated_ndarrays, agg_meta = apply_aggregation(
@@ -520,6 +532,7 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
             else [False] * len(client_data)
         )
         risk_scores: Optional[List[float]] = agg_meta.get("risk_score")
+        soft_weights: Optional[List[float]] = agg_meta.get("soft_weights")
         detection_reasons_raw: Optional[List[str]] = agg_meta.get("detection_reasons")
         detection_reasons: List[str] = (
             list(detection_reasons_raw)
@@ -545,26 +558,39 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
                     suffix if reason == "accepted" else f"{reason}+{suffix}"
                 )
 
-        if self.aggregation_method == "csra_dcd" and any(commitment_mask):
+        if self.aggregation_method in ("csra_dcd", "csra_soft") and any(commitment_mask):
             anomaly_mask = [
                 bool(anom or commitment)
                 for anom, commitment in zip(anomaly_mask, commitment_mask)
             ]
-            agg_valid = [
-                d for d, anom in zip(client_data, anomaly_mask) if not anom
-            ]
-            if agg_valid:
-                aggregated_ndarrays, _ = apply_aggregation(
-                    "fedavg",
-                    [d["params"] for d in agg_valid],
-                    weights=[d["num_examples"] for d in agg_valid],
-                )
-            else:
-                logger.warning(
-                    "Round %s: all CSRA-DCD clients blocked by data commitment; "
-                    "keeping original aggregate",
-                    server_round,
-                )
+            if self.aggregation_method == "csra_dcd":
+                agg_valid = [
+                    d for d, anom in zip(client_data, anomaly_mask) if not anom
+                ]
+                if agg_valid:
+                    aggregated_ndarrays, _ = apply_aggregation(
+                        "fedavg",
+                        [d["params"] for d in agg_valid],
+                        weights=[d["num_examples"] for d in agg_valid],
+                    )
+                else:
+                    logger.warning(
+                        "Round %s: all CSRA-DCD clients blocked by data commitment; "
+                        "keeping original aggregate",
+                        server_round,
+                    )
+            elif self.aggregation_method == "csra_soft":
+                eff_weights = agg_meta.get("effective_weights", [1.0] * len(client_data))
+                new_eff_weights = [w if not c else 0.0 for w, c in zip(eff_weights, commitment_mask)]
+                if sum(new_eff_weights) < 1e-12:
+                    if self._current_global_ndarrays is not None:
+                        aggregated_ndarrays = self._current_global_ndarrays
+                else:
+                    aggregated_ndarrays, _ = apply_aggregation(
+                        "fedavg",
+                        [d["params"] for d in client_data],
+                        weights=new_eff_weights
+                    )
 
         aggregated_params = ndarrays_to_parameters(aggregated_ndarrays)
 
@@ -639,6 +665,11 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
                     if "w_next" in agg_meta and agg_meta["w_next"] is not None
                     else None
                 ),
+                "soft_weight_assigned": (
+                    float(soft_weights[i])
+                    if soft_weights is not None and i < len(soft_weights)
+                    else None
+                ),
             }
 
         # ── 3. Valid clients for aggregation (post update-filter) ────────────
@@ -665,6 +696,39 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
             det["detection_reason"] = (
                 suffix if reason == "accepted" else f"{reason}+{suffix}"
             )
+
+        # ── 3.5. Server-side Validation (Per-Client Evaluation) ───────────────
+        if self.aggregation_method == "csra_soft" and self.validation_fn is not None and self._current_global_ndarrays is not None:
+            try:
+                baseline_val_loss = self.validation_fn(self._current_global_ndarrays)
+                scale = 1.0 / len(client_data)
+                
+                for d in client_data:
+                    cid = d["cid"]
+                    # Create temporary global model with this client's scaled update
+                    temp_params = [
+                        g + scale * (p - g)
+                        for g, p in zip(self._current_global_ndarrays, d["params"])
+                    ]
+                    val_loss = self.validation_fn(temp_params)
+                    val_loss_delta = val_loss - baseline_val_loss
+                    
+                    detection_info[cid]["validation_loss_delta"] = float(val_loss_delta)
+                    
+                    if val_loss_delta > self.val_epsilon:
+                        detection_info[cid]["is_val_suspect"] = True
+                        reward_blocked_cids.add(cid)
+                        reason = detection_info[cid].get("detection_reason", "accepted")
+                        detection_info[cid]["detection_reason"] = (
+                            "validation_suspect" if reason == "accepted" else f"{reason}+validation_suspect"
+                        )
+                    else:
+                        detection_info[cid]["is_val_suspect"] = False
+            except Exception as e:
+                logger.error("Per-client validation failed: %s", e)
+                for d in client_data:
+                    detection_info[d["cid"]]["validation_loss_delta"] = None
+                    detection_info[d["cid"]]["is_val_suspect"] = False
 
         suspicion_blocked_cids = set()
         for i, d in enumerate(client_data):
@@ -750,11 +814,25 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
                     reputations_map[cid] = 0.0
                     onchain_honesty_map[cid] = True
         else:
-            # Không có blockchain → reputation default = 0.5 cho mọi participant
-            # (đủ để CSRA reward formula chạy, tránh bias)
+            # Dùng OffChainReputation simulator
+            for i, d in enumerate(client_data):
+                is_reward_blocked = d["cid"] in reward_blocked_cids
+                alignment_qs = max(0.0, detection_info[d["cid"]].get("cosine_to_reference", 0.0) or 0.0)
+                qs = 0.0 if is_reward_blocked else alignment_qs
+                ds = 0 if is_reward_blocked else d["data_size"]
+                if self.rep_sim is not None:
+                    self.rep_sim.record_contribution(
+                        d["cid"], qs, ds, self.mean_data_size, server_round
+                    )
+            
             for cid in range(self.cfg.fl.n_clients):
-                reputations_map[cid] = 0.5
-                onchain_honesty_map[cid] = True
+                if self.rep_sim is not None:
+                    rep, is_honest_on_chain = self.rep_sim.get_reputation(cid)
+                    reputations_map[cid] = float(rep)
+                    onchain_honesty_map[cid] = bool(is_honest_on_chain)
+                else:
+                    reputations_map[cid] = 0.5
+                    onchain_honesty_map[cid] = True
 
         reputation_blocked_cids = {
             d["cid"] for d in valid_data
@@ -957,6 +1035,9 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
                     "reward_component_quality": 0.0,
                     "reward_component_data": 0.0,
                     "reward_component_reputation": 0.0,
+                    "validation_loss_delta": None,
+                    "is_val_suspect": False,
+                    "soft_weight_assigned": None,
                 }
             else:
                 client_type = self.client_types.get(cid, "honest")
@@ -1005,6 +1086,9 @@ class FLUnifiedStrategy(fl.server.strategy.FedAvg):
                     "reward_component_quality": reward_components[cid]["quality"],
                     "reward_component_data": reward_components[cid]["data"],
                     "reward_component_reputation": reward_components[cid]["reputation"],
+                    "validation_loss_delta": det.get("validation_loss_delta"),
+                    "is_val_suspect": det.get("is_val_suspect", False),
+                    "soft_weight_assigned": det.get("soft_weight_assigned"),
                 }
             pending_rows.append(row)
 

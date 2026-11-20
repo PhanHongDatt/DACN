@@ -283,7 +283,7 @@ score_i = beta * quality_alignment_i
 Trong runner hiện tại:
 
 - `quality` cho reward là alignment/cosine do server tính từ update, không phải local delta-loss client tự báo.
-- `data_size` ưu tiên server-known partition size trong simulation, và log thêm reported/server-known size để phát hiện mismatch.
+- `data_size` ưu tiên server-known partition size trong simulation, và log thêm reported/server-known size để phát hiện mismatch. Khi server-known size có sẵn, aggregation weight cũng dùng giá trị này thay vì `FitRes.num_examples` do client báo.
 - `reputation` là tín hiệu lịch sử từ blockchain nếu bật, mặc định `0.5` khi chạy `--no-blockchain`.
 - CSV schema v2 tách `ground_truth_honest` (nhãn kịch bản), `reward_eligible` (đủ điều kiện nhận reward sau filtering/quarantine) và `is_honest` (legacy alias của `reward_eligible`).
 - Các cột `reward_component_*` log thành phần đang thật sự dùng: policy `data`/`quality` chỉ điền component tương ứng; policy `csra` điền ba component sau weighting.

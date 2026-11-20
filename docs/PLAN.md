@@ -453,14 +453,14 @@ Quy ước viết tắt:
 | `is_honest` | bool | legacy alias của `reward_eligible`, không dùng làm ground truth |
 | `data_size` | int | effective data size server dùng cho reward/log |
 | `reported_data_size` | int | data size client báo về |
-| `server_known_data_size` | int | partition size server biết trong simulation |
+| `server_known_data_size` | int | partition size server biết trong simulation; nếu có thì dùng cho normalization, reward data và FedAvg aggregation weight |
 | `quality_score` | float | local client metric; reward quality hiện dùng server-side alignment |
 | `reputation` | float | |
 | `w_new` | float | weight tổng dùng cho aggregation |
 | `reward_eth` | float | |
 | `reward_blocked` | bool | client bị chặn reward/quarantine |
 | `is_anomaly` | bool | bị flag bởi CSRA-DCD filter |
-| `anomaly_score` | float | `‖Δᵢ‖₂` |
+| `anomaly_score` | float | score dùng cho detector; hiện là `normalized_update_score` khi server-side features tính được, fallback client-reported nếu không |
 | `raw_update_norm` | float | update norm server tính từ params |
 | `raw_update_norm_z` | float | upper-tail robust z-score của raw update norm |
 | `normalized_update_score` | float | update norm chuẩn hóa theo server-known data size |
@@ -470,7 +470,7 @@ Quy ước viết tắt:
 | `inefficient_update` | bool | reward-quarantine signal: raw norm cực lớn nhưng quality không vượt median |
 | `data_size_mismatch` | bool | client-reported size khác server-known size |
 | `robust_z` | float | MAD-based z-score |
-| `detection_reason` | str | "accepted" / "filtered_anomaly" |
+| `detection_reason` | str | lý do quyết định, ví dụ `accepted`, `filtered_anomaly`, `suspicion_quarantine`, `low_reputation` hoặc chuỗi ghép bằng `+` |
 | `suspicion_score` | float | rolling suspicion state |
 | `suspicion_quarantine` | bool | reward quarantine vì suspicion |
 | `reward_component_quality` | float | normalized quality/alignment component dùng bởi `quality`; weighted quality component với `csra`; `0` nếu policy không dùng |

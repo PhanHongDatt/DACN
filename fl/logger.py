@@ -48,6 +48,8 @@ FIELDS = [
     "authenticity_score", "authenticity_anomaly",
     "suspicion_signal", "suspicion_score", "suspicion_quarantine", "suspicion_reason",
     "reward_component_quality", "reward_component_data", "reward_component_reputation",
+    # CSRA-Soft & Server-side Validation
+    "validation_loss_delta", "is_val_suspect", "soft_weight_assigned",
     # FedLAW signals
     "alignment_score", "simplex_weight",
     # Per-round target
@@ -148,6 +150,10 @@ class ExperimentLogger:
         reward_component_quality: Optional[float] = None,
         reward_component_data: Optional[float] = None,
         reward_component_reputation: Optional[float] = None,
+        # CSRA-Soft & Validation signals
+        validation_loss_delta: Optional[float] = None,
+        is_val_suspect: Optional[bool] = None,
+        soft_weight_assigned: Optional[float] = None,
         # FedLAW signals
         alignment_score: Optional[float] = None,
         simplex_weight: Optional[float] = None,
@@ -311,22 +317,16 @@ class ExperimentLogger:
                 if suspicion_quarantine is not None else ""
             ),
             "suspicion_reason": suspicion_reason,
-            "reward_component_quality": (
-                round(reward_component_quality, 6)
-                if reward_component_quality is not None else ""
-            ),
-            "reward_component_data": (
-                round(reward_component_data, 6)
-                if reward_component_data is not None else ""
-            ),
-            "reward_component_reputation": (
-                round(reward_component_reputation, 6)
-                if reward_component_reputation is not None else ""
-            ),
+            "reward_component_quality": round(reward_component_quality, 6) if reward_component_quality is not None else "",
+            "reward_component_data": round(reward_component_data, 6) if reward_component_data is not None else "",
+            "reward_component_reputation": round(reward_component_reputation, 6) if reward_component_reputation is not None else "",
+            "validation_loss_delta": round(validation_loss_delta, 6) if validation_loss_delta is not None else "",
+            "is_val_suspect": int(is_val_suspect) if is_val_suspect is not None else "",
+            "soft_weight_assigned": round(soft_weight_assigned, 6) if soft_weight_assigned is not None else "",
             "alignment_score": round(alignment_score, 6) if alignment_score is not None else "",
             "simplex_weight": round(simplex_weight, 6) if simplex_weight is not None else "",
             "global_accuracy": round(global_accuracy, 4) if global_accuracy is not None else "",
-            "global_loss": round(global_loss, 6) if global_loss is not None else "",
+            "global_loss": round(global_loss, 4) if global_loss is not None else "",
         })
         self._file.flush()
 

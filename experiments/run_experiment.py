@@ -318,12 +318,35 @@ def main() -> None:
     attack_ids = parse_attack_ids(args.attack_client_ids, args.attack, args.n_clients)
     client_types = build_client_types(args.n_clients, args.attack, attack_ids)
 
+    if args.dirichlet_alpha is not None:
+        exp_cfg.dirichlet_beta = args.dirichlet_alpha
+
+    fl_cfg = FLConfig(
+        n_clients=args.n_clients,
+        n_rounds=args.n_rounds,
+        batch_size=args.batch_size,
+        local_epochs=args.local_epochs,
+    )
+    fedlaw_cfg = FedLAWConfig(
+        alpha=args.alpha_law,
+        beta=args.beta_law,
+        sparsity_s=args.sparsity_s,
+        capping_t=args.capping_t,
+    )
+    cfg = ProjectConfig(fl=fl_cfg, experiment=exp_cfg, fedlaw=fedlaw_cfg)
+
+    os.makedirs(args.log_dir, exist_ok=True)
+
+    # ── Attack setup ─────────────────────────────────────────────────────
+    attack_ids = parse_attack_ids(args.attack_client_ids, args.attack, args.n_clients)
+    client_types = build_client_types(args.n_clients, args.attack, attack_ids)
+
     # ── Data ─────────────────────────────────────────────────────────────
     logger.info(
         f"Loading {args.dataset} | scenario={args.scenario} "
         f"| dirichlet={exp_cfg.dirichlet_beta if args.scenario == 'K3' else 'N/A'}"
     )
-    splits, train_labels, mean_ds = get_client_partitions(
+    splits, train_labels, mean_ds, val_indices = get_client_partitions(
         args.dataset, args.n_clients, exp_cfg
     )
     train_dataset = load_dataset(args.dataset, train=True)
@@ -407,6 +430,34 @@ def main() -> None:
 
     init_params = ndarrays_to_parameters(get_parameters(get_model(args.dataset)))
 
+    # ── Server-side Validation Setup ───────────────────────────────────────
+    validation_fn = None
+    if val_indices is not None:
+        from fl.models import set_parameters
+        import torch.nn as nn
+        
+        val_loader = make_dataloader(
+            train_dataset, val_indices, fl_cfg.batch_size, shuffle=False
+        )
+        val_model = get_model(args.dataset)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        val_model.to(device)
+        criterion = nn.CrossEntropyLoss(reduction="sum")
+        
+        def _validation_fn(params: list[np.ndarray]) -> float:
+            set_parameters(val_model, params)
+            val_model.eval()
+            total_loss = 0.0
+            with torch.no_grad():
+                for data, target in val_loader:
+                    data, target = data.to(device), target.to(device)
+                    output = val_model(data)
+                    total_loss += criterion(output, target).item()
+            return total_loss / len(val_loader.dataset)
+            
+        validation_fn = _validation_fn
+        logger.info(f"Server-side validation initialized with {len(val_indices)} samples.")
+
     # Khi reward != csra, beta/gamma/delta không có ý nghĩa — set về 0 để CSV và filename
     # consistent (chỉ run với reward=csra mới có giá trị thực).
     eff_beta = args.beta if args.reward_policy == "csra" else 0.0
@@ -451,6 +502,9 @@ def main() -> None:
         delta=eff_delta,
         # Blockchain
         bridge=bridge,
+        # Server-side validation
+        validation_fn=validation_fn,
+        val_epsilon=0.005,
         # Flower base
         fraction_fit=fl_cfg.fraction_fit,
         fraction_evaluate=1.0,
@@ -474,8 +528,8 @@ def main() -> None:
         if bridge and exp_id_chain is not None:
             try:
                 bridge.end_experiment(exp_id_chain, args.n_rounds)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to end on-chain experiment lifecycle: %s", exc)
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user — saving partial results")

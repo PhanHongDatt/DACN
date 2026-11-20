@@ -1,0 +1,42 @@
+| Kịch bản | Client ID | Tổng mẫu | Số class | Phân bố mẫu theo Class (Top 3) |
+|---|---|---|---|---|
+| **K1 (IID)** | Client 0 | 6000 | 10 | Class 1: 675, Class 3: 644, Class 8: 608 |
+| **K1 (IID)** | Client 1 | 6000 | 10 | Class 1: 694, Class 3: 623, Class 7: 614 |
+| **K1 (IID)** | Client 2 | 6000 | 10 | Class 1: 673, Class 3: 651, Class 7: 615 |
+| **K1 (IID)** | Client 3 | 6000 | 10 | Class 1: 658, Class 7: 604, Class 2: 600 |
+| **K1 (IID)** | Client 4 | 6000 | 10 | Class 1: 687, Class 8: 635, Class 6: 609 |
+| **K1 (IID)** | Client 5 | 6000 | 10 | Class 1: 647, Class 7: 636, Class 9: 607 |
+| **K1 (IID)** | Client 6 | 6000 | 10 | Class 7: 692, Class 1: 660, Class 6: 613 |
+| **K1 (IID)** | Client 7 | 6000 | 10 | Class 1: 673, Class 7: 634, Class 0: 630 |
+| **K1 (IID)** | Client 8 | 6000 | 10 | Class 1: 657, Class 9: 637, Class 7: 636 |
+| **K1 (IID)** | Client 9 | 6000 | 10 | Class 1: 718, Class 7: 627, Class 0: 620 |
+| **K2 (Weak Non-IID)** | Client 0 | 3063 | 5 | Class 1: 675, Class 3: 614, Class 2: 596 |
+| **K2 (Weak Non-IID)** | Client 1 | 2943 | 5 | Class 7: 627, Class 2: 596, Class 0: 593 |
+| **K2 (Weak Non-IID)** | Client 2 | 2928 | 5 | Class 3: 613, Class 2: 596, Class 0: 593 |
+| **K2 (Weak Non-IID)** | Client 3 | 2941 | 5 | Class 7: 627, Class 9: 595, Class 6: 592 |
+| **K2 (Weak Non-IID)** | Client 4 | 3059 | 5 | Class 1: 674, Class 3: 613, Class 2: 596 |
+| **K2 (Weak Non-IID)** | Client 5 | 3009 | 5 | Class 1: 674, Class 3: 613, Class 9: 595 |
+| **K2 (Weak Non-IID)** | Client 6 | 3059 | 5 | Class 1: 674, Class 3: 613, Class 2: 596 |
+| **K2 (Weak Non-IID)** | Client 7 | 2947 | 5 | Class 7: 626, Class 9: 595, Class 6: 592 |
+| **K2 (Weak Non-IID)** | Client 8 | 3008 | 5 | Class 1: 674, Class 3: 613, Class 2: 595 |
+| **K2 (Weak Non-IID)** | Client 9 | 2938 | 5 | Class 7: 626, Class 9: 594, Class 6: 591 |
+| **K3 (Dirichlet a=0.5)** | Client 0 | 5669 | 10 | Class 1: 1510, Class 2: 1007, Class 4: 942 |
+| **K3 (Dirichlet a=0.5)** | Client 1 | 6558 | 10 | Class 9: 2764, Class 7: 2528, Class 8: 512 |
+| **K3 (Dirichlet a=0.5)** | Client 2 | 5193 | 10 | Class 0: 1453, Class 2: 1064, Class 7: 1052 |
+| **K3 (Dirichlet a=0.5)** | Client 3 | 9858 | 10 | Class 1: 2598, Class 0: 2530, Class 7: 1574 |
+| **K3 (Dirichlet a=0.5)** | Client 4 | 4116 | 10 | Class 5: 887, Class 8: 788, Class 2: 714 |
+| **K3 (Dirichlet a=0.5)** | Client 5 | 4606 | 10 | Class 3: 1183, Class 8: 968, Class 9: 579 |
+| **K3 (Dirichlet a=0.5)** | Client 6 | 10756 | 10 | Class 4: 3128, Class 6: 2425, Class 2: 2243 |
+| **K3 (Dirichlet a=0.5)** | Client 7 | 3576 | 10 | Class 3: 1634, Class 1: 883, Class 8: 545 |
+| **K3 (Dirichlet a=0.5)** | Client 8 | 5684 | 10 | Class 5: 1817, Class 9: 971, Class 8: 955 |
+| **K3 (Dirichlet a=0.5)** | Client 9 | 3984 | 10 | Class 8: 1743, Class 9: 777, Class 1: 677 |
+| **K3 (Dirichlet a=0.1)** | Client 0 | 3187 | 9 | Class 8: 1771, Class 2: 573, Class 6: 443 |
+| **K3 (Dirichlet a=0.1)** | Client 1 | 5858 | 6 | Class 7: 4225, Class 1: 801, Class 9: 771 |
+| **K3 (Dirichlet a=0.1)** | Client 2 | 4156 | 8 | Class 7: 1863, Class 9: 1510, Class 2: 684 |
+| **K3 (Dirichlet a=0.1)** | Client 3 | 11604 | 8 | Class 3: 5522, Class 9: 3572, Class 0: 1619 |
+| **K3 (Dirichlet a=0.1)** | Client 4 | 7580 | 7 | Class 0: 3872, Class 5: 3481, Class 2: 166 |
+| **K3 (Dirichlet a=0.1)** | Client 5 | 1093 | 4 | Class 5: 953, Class 1: 120, Class 4: 16 |
+| **K3 (Dirichlet a=0.1)** | Client 6 | 11168 | 7 | Class 1: 5126, Class 6: 5071, Class 5: 577 |
+| **K3 (Dirichlet a=0.1)** | Client 7 | 7749 | 6 | Class 2: 4468, Class 8: 3118, Class 0: 79 |
+| **K3 (Dirichlet a=0.1)** | Client 8 | 937 | 6 | Class 3: 377, Class 0: 265, Class 4: 145 |
+| **K3 (Dirichlet a=0.1)** | Client 9 | 6668 | 9 | Class 4: 5503, Class 8: 945, Class 5: 122 |

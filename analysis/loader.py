@@ -25,7 +25,7 @@ _FNAME_RE = re.compile(
     r"^(?P<dataset>fashion_mnist|cifar10|mnist)"
     r"_(?P<scenario>K\d+)"
     r"(?:_da(?P<dirichlet_raw>\d{3}))?"
-    r"_(?P<aggregation_method>fedavg|trimmed|csra_dcd)"
+    r"_(?P<aggregation_method>fedavg|trimmed|csra_dcd|csra_soft)"
     r"_(?P<reward_policy>equal|data|quality|csra)"
     r"_b(?P<beta_raw>\d{2})g(?P<gamma_raw>\d{2})d(?P<delta_raw>\d{2})"
     r"_s(?P<seed>\d+)"
@@ -38,6 +38,7 @@ _AGG_LABEL = {
     "fedavg": "FedAvg",
     "trimmed": "TrimmedMean",
     "csra_dcd": "CSRA-DCD",
+    "csra_soft": "CSRA-Soft",
 }
 _REWARD_LABEL = {
     "equal": "EqualSplit",

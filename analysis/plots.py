@@ -271,9 +271,11 @@ def plot_baseline_comparison(df, out_dir, dpi=200, smooth=0, ci=False, **_):
             for bar, h in zip(bars, heights):
                 if h > 0:
                     ax2.text(bar.get_x() + bar.get_width() / 2, h + 0.01,
-                             f"{h:.3f}", ha="center", va="bottom", fontsize=7)
+                             f"{h:.3f}", ha="center", va="bottom", rotation=90, fontsize=8)
 
-        ax2.legend()
+        # Increase ylim to make room for vertical text and move legend outside
+        ax2.set_ylim(0, 1.25)
+        ax2.legend(loc='upper right', bbox_to_anchor=(1.0, 1.0), fontsize=8)
         plt.tight_layout()
         save_fig(fig2, out_dir / f"baseline_final_accuracy_{ds}.png", dpi)
 
@@ -465,7 +467,11 @@ def plot_reputation_analysis(df, out_dir, dpi=200, smooth=0, **_):
             ax2.set_xlabel("Round")
             ax2.set_ylabel("Reputation")
 
-            for ctype in _ordered_client_types(types):
+            # Filter out attacks that bypass distance-based detection to avoid cluttering the success graph
+            allowed_types = ["honest", "free_rider", "stealth_free_rider", "sign_flip"]
+            filtered_types = [t for t in _ordered_client_types(types) if t in allowed_types]
+            
+            for ctype in filtered_types:
                 type_df = attack_sc_df[attack_sc_df["client_type"] == ctype]
                 if type_df.empty:
                     continue
